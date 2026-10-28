@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "computerworld-cloud"
+version = "0.1.0"
+description = "A small client for the hosted ComputerWorld API: worlds, environments, procedures and swarms over HTTP."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://computerworld.pages.dev"
+Documentation = "https://computerworld.pages.dev/docs/cloud-clients"
+Source = "https://github.com/ComputaCo/computerworld/tree/main/python"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+computerworld_cloud = ["py.typed"]

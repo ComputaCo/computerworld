@@ -1,0 +1,35 @@
+{
+  "name": "computerworld-cloud",
+  "version": "0.1.0",
+  "description": "A small client for the hosted ComputerWorld API: worlds, environments, procedures and swarms over HTTP.",
+  "type": "module",
+  "main": "./computerworld-cloud.mjs",
+  "types": "./computerworld-cloud.d.mts",
+  "exports": {
+    ".": {
+      "types": "./computerworld-cloud.d.mts",
+      "default": "./computerworld-cloud.mjs"
+    }
+  },
+  "files": [
+    "computerworld-cloud.mjs",
+    "computerworld-cloud.d.mts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/client.test.mjs",
+    "test:live": "node --test test/live.test.mjs",
+    "typecheck": "tsc -p ."
+  },
+  "license": "MIT",
+  "homepage": "https://computerworld.pages.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ComputaCo/computerworld.git"
+  },
+  "sideEffects": false
+}
