@@ -11,7 +11,7 @@ from ._http import Transport
 from .errors import ComputerWorldError
 from .scene import Matcher, center, find_element, find_elements
 
-DEFAULT_BASE_URL = "https://computerworld.pages.dev/v1"
+DEFAULT_BASE_URL = "https://computaco.ai/v1"
 DEFAULT_WIDTH, DEFAULT_HEIGHT = 1280, 800
 
 JSON = Dict[str, Any]

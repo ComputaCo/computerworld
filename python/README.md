@@ -1,11 +1,11 @@
 # computerworld-cloud (Python)
 
-A small client for the hosted ComputerWorld API at `https://computerworld.pages.dev/v1`.
+A small client for the hosted ComputerWorld API at `https://computaco.ai/v1`.
 Standard library only, Python 3.9 or later, typed (`py.typed`). The contract is
-[`openapi.yaml`](https://computerworld.pages.dev/openapi.yaml); the guide is
-[the hosted API docs](https://computerworld.pages.dev/docs/cloud-api), and [the clients guide](https://computerworld.pages.dev/docs/cloud-clients)
+[`openapi.yaml`](https://computaco.ai/openapi.yaml); the guide is
+[the hosted API docs](https://computaco.ai/docs/cloud-api), and [the clients guide](https://computaco.ai/docs/cloud-clients)
 covers this client and the [JavaScript one](https://github.com/ComputaCo/computerworld) together.
-Get an API key at <https://computerworld.pages.dev/console/create-account.html>.
+Get an API key at <https://computaco.ai/console/create-account.html>.
 
 ## Install
 

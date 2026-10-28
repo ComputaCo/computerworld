@@ -26,7 +26,7 @@
     "typecheck": "tsc -p ."
   },
   "license": "MIT",
-  "homepage": "https://computerworld.pages.dev",
+  "homepage": "https://computaco.ai",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ComputaCo/computerworld.git"

@@ -8,7 +8,7 @@
 // Types are in computerworld-cloud.d.mts beside it. The contract is cloud/openapi.yaml.
 
 export const VERSION = '0.1.0';
-export const DEFAULT_BASE_URL = 'https://computerworld.pages.dev/v1';
+export const DEFAULT_BASE_URL = 'https://computaco.ai/v1';
 export const USER_AGENT = `computerworld-cloud-js/${VERSION}`;
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 800;

@@ -1,4 +1,4 @@
-"""A client for the hosted ComputerWorld API (https://computerworld.pages.dev/v1).
+"""A client for the hosted ComputerWorld API (https://computaco.ai/v1).
 
     from computerworld_cloud import Client
 

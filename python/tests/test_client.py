@@ -22,6 +22,7 @@ from computerworld_cloud import (  # noqa: E402
     ServerError,
     __version__,
 )
+from computerworld_cloud.client import DEFAULT_BASE_URL  # noqa: E402
 from computerworld_cloud._http import Transport, normalize_base_url, parse_retry_after  # noqa: E402
 from mock_server import MockApi, error, reply  # noqa: E402
 
@@ -80,6 +81,14 @@ class TransportTests(Base):
     def test_base_url_normalization(self) -> None:
         self.assertEqual(normalize_base_url("https://x.dev"), "https://x.dev/v1")
         self.assertEqual(normalize_base_url("https://x.dev/v1/"), "https://x.dev/v1")
+
+    def test_default_base_url_and_the_older_name(self) -> None:
+        self.assertEqual(DEFAULT_BASE_URL, "https://computaco.ai/v1")
+        self.assertEqual(Client("cw_live_x").base_url, "https://computaco.ai/v1")
+        self.assertEqual(
+            Client("cw_live_x", base_url="https://computerworld.pages.dev").base_url,
+            "https://computerworld.pages.dev/v1",
+        )
 
     def test_error_carries_code_message_and_status(self) -> None:
         self.api.routes[("GET", "/v1/worlds/w_x")] = error(404, "not_found", "no such world")

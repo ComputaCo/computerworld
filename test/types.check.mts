@@ -1,7 +1,7 @@
 // Compiled by `tsc --noEmit` (see README): the declarations describe real use.
 import { ApiError, Client, Environment, findElement, type Frame, type StepResult } from '../computerworld-cloud.mjs';
 
-const client = new Client('cw_live_…', { baseUrl: 'https://computerworld.pages.dev', maxRetries: 2 });
+const client = new Client('cw_live_…', { baseUrl: 'https://computaco.ai', maxRetries: 2 });
 const world = await client.createWorld('agent-desktop', { seed: 1 });
 const env: Environment = await world.environment({ label: 'agent' });
 const scene = await env.scene({ elements: true });

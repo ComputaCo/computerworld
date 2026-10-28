@@ -16,8 +16,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://computerworld.pages.dev"
-Documentation = "https://computerworld.pages.dev/docs/cloud-clients"
+Homepage = "https://computaco.ai"
+Documentation = "https://computaco.ai/docs/cloud-clients"
 Source = "https://github.com/ComputaCo/computerworld/tree/main/python"
 
 [tool.setuptools.packages.find]

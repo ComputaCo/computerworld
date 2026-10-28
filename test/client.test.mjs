@@ -8,6 +8,7 @@ import {
   ApiError,
   Client,
   ConnectionFailed,
+  DEFAULT_BASE_URL,
   ElementNotFound,
   Environment,
   VERSION,
@@ -76,6 +77,12 @@ describe('transport', () => {
   test('base URLs are normalized', () => {
     assert.equal(normalizeBaseUrl('https://x.dev'), 'https://x.dev/v1');
     assert.equal(normalizeBaseUrl('https://x.dev/v1/'), 'https://x.dev/v1');
+  });
+
+  test('the default is computaco.ai, and the older pages.dev name still works', () => {
+    assert.equal(DEFAULT_BASE_URL, 'https://computaco.ai/v1');
+    assert.equal(new Client('cw_live_x').baseUrl, 'https://computaco.ai/v1');
+    assert.equal(new Client('cw_live_x', { baseUrl: 'https://computerworld.pages.dev' }).baseUrl, 'https://computerworld.pages.dev/v1');
   });
 
   test('errors carry status, code and message', async () => {
