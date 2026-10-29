@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Union
@@ -264,8 +265,12 @@ class Client:
         seed: int = 1,
         platform: Optional[str] = None,
         name: Optional[str] = None,
+        idle_ttl: Optional[int] = None,
     ) -> "World":
-        """Boot a world from a built-in world name, a blueprint id or a definition."""
+        """Boot a world from a built-in world name, a blueprint id or a definition.
+
+        ``idle_ttl`` (seconds): the service deletes the world after that long with no request to it.
+        """
         if sum(x is not None for x in (world, blueprint, definition)) != 1:
             raise ValueError("pass exactly one of world, blueprint, definition")
         body = _drop_none(
@@ -276,9 +281,20 @@ class Client:
                 "seed": seed,
                 "platform": platform,
                 "name": name,
+                "idle_ttl": idle_ttl,
             }
         )
         return World(self, self._post("/worlds", body))
+
+    # -- agent models (OpenAI's paths) ---------------------------------------------------------
+
+    def models(self) -> List[JSON]:
+        """The agent models: ``deepseek-flash`` (text and tools) and the vision model."""
+        return self._get("/models")["data"]
+
+    def chat(self, body: JSON) -> JSON:
+        """OpenAI chat completions: ``chat({"model": "deepseek-flash", "messages": [...]})``."""
+        return self._post("/chat/completions", body)
 
     def get_world(self, world_id: str) -> "World":
         return World(self, self._get(f"/worlds/{_q(world_id)}"))
@@ -370,6 +386,15 @@ class World:
     def delete(self) -> None:
         """Delete the world, its snapshots and its environments."""
         self._c._delete(self._p)
+
+    def read_file(self, path: str, *, machine: Optional[str] = None) -> JSON:
+        """A file on a machine, as the owner reads it: ``{machine, path, content, base64, bytes}``."""
+        return self._c._json("GET", self._p + "/files", params=_drop_none({"machine": machine, "path": path}))
+
+    def write_file(self, path: str, data: Union[str, bytes], *, machine: Optional[str] = None) -> JSON:
+        """Write a file onto a machine: text (``str``) or ``bytes``."""
+        body = {"content": data} if isinstance(data, str) else {"base64": base64.b64encode(data).decode("ascii")}
+        return self._c._json("PUT", self._p + "/files", body, params=_drop_none({"machine": machine, "path": path}))
 
     # -- clock and state ----------------------------------------------------------------------
 
@@ -629,13 +654,17 @@ class Environment:
 
     # -- the four engine calls ----------------------------------------------------------------
 
-    def step(self, actions: Union[JSON, Iterable[JSON]]) -> JSON:
+    def step(self, actions: Union[JSON, Iterable[JSON]], *, render: Optional[JSON] = None) -> JSON:
         """Send up to 64 actions in order: ``{outcomes, observation, state_hash, tick}``.
 
-        An action outside the grant is an unsuccessful outcome, not an exception.
+        An action outside the grant is an unsuccessful outcome, not an exception. ``render``
+        (``{"width", "height", "if_changed"}``) adds ``frame``: the screen they left, a base64 PNG.
         """
         batch = [actions] if isinstance(actions, Mapping) else list(actions)
-        return self._t.request("POST", self._p + "/step", json_body={"actions": batch}).json()
+        body: JSON = {"actions": batch}
+        if render is not None:
+            body["render"] = {"width": self.width, "height": self.height, **render}
+        return self._t.request("POST", self._p + "/step", json_body=body).json()
 
     def observe(self) -> JSON:
         return self._t.request("GET", self._p + "/observe").json()

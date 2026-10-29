@@ -365,12 +365,24 @@ export class Client {
   async listWorlds() {
     return (await this._get('/worlds')).worlds;
   }
-  /** Boot a world: `createWorld('agent-desktop', { seed })`, or `{ blueprint }` / `{ definition }`. */
-  async createWorld(world, { blueprint, definition, seed = 1, platform, name } = {}) {
+  /**
+   * Boot a world: `createWorld('agent-desktop', { seed })`, or `{ blueprint }` / `{ definition }`.
+   * `idleTtl` (seconds): the service deletes the world after that long with no request to it.
+   */
+  async createWorld(world, { blueprint, definition, seed = 1, platform, name, idleTtl } = {}) {
     if ([world, blueprint, definition].filter((x) => x != null).length !== 1) {
       throw new Error('pass exactly one of world, blueprint, definition');
     }
-    return new World(this, await this._post('/worlds', dropUndefined({ world, blueprint, definition, seed, platform, name })));
+    return new World(this, await this._post('/worlds', dropUndefined({ world, blueprint, definition, seed, platform, name, idle_ttl: idleTtl })));
+  }
+
+  // agent models (OpenAI's paths)
+  async models() {
+    return (await this._get('/models')).data;
+  }
+  /** OpenAI chat completions: `chat({ model: 'deepseek-flash', messages, tools })`. */
+  chat(body) {
+    return this._post('/chat/completions', body);
   }
   async getWorld(id) {
     return new World(this, await this._get(`/worlds/${q(id)}`));
@@ -421,6 +433,15 @@ export class World {
   /** Delete the world, its snapshots and its environments. */
   delete() {
     return this._c._delete(this._p);
+  }
+  /** A file on a machine, as the owner reads it: `{ machine, path, content, base64, bytes }`. */
+  readFile(path, { machine } = {}) {
+    return this._c._get(`${this._p}/files`, dropUndefined({ machine, path }));
+  }
+  /** Write a file onto a machine: text, or bytes (a Uint8Array). */
+  writeFile(path, data, { machine } = {}) {
+    const body = typeof data === 'string' ? { content: data } : { base64: btoa(Array.from(data, (b) => String.fromCharCode(b)).join('')) };
+    return this._c._t.json('PUT', `${this._p}/files`, body, { params: dropUndefined({ machine, path }) });
   }
   /** `await using world = await client.createWorld(...)` deletes it at the end of the block. */
   [Symbol.asyncDispose ?? Symbol.for('Symbol.asyncDispose')]() {
@@ -582,9 +603,14 @@ export class Environment {
     return this.grant.config ?? {};
   }
 
-  /** Send up to 64 actions in order. An action outside the grant is an unsuccessful outcome. */
-  step(actions) {
-    return this._t.json('POST', `${this._p}/step`, { actions: Array.isArray(actions) ? actions : [actions] });
+  /**
+   * Send up to 64 actions in order. An action outside the grant is an unsuccessful outcome.
+   * `render: { width, height, ifChanged }` answers the screen they left as `frame` (a base64 PNG).
+   */
+  step(actions, { render } = {}) {
+    const body = { actions: Array.isArray(actions) ? actions : [actions] };
+    if (render) body.render = dropUndefined({ width: render.width ?? this.width, height: render.height ?? this.height, if_changed: render.ifChanged });
+    return this._t.json('POST', `${this._p}/step`, body);
   }
   observe() {
     return this._t.json('GET', `${this._p}/observe`);

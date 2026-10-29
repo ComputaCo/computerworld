@@ -63,6 +63,35 @@ class Base(unittest.TestCase):
         return world, world.environment()
 
 
+class OneComputerTests(Base):
+    def test_step_with_frame_files_and_idle_ttl(self) -> None:
+        self.api.routes[("POST", "/v1/worlds")] = reply(201, {**WORLD, "idle_ttl": 900})
+        self.api.routes[("POST", "/v1/worlds/w_abc/environments")] = reply(201, GRANT)
+        world = self.client.create_world("agent-desktop", platform="ubuntu", idle_ttl=900)
+        self.assertEqual(self.api.requests[-1]["body"], {"world": "agent-desktop", "seed": 1, "platform": "ubuntu", "idle_ttl": 900})
+        env = world.environment()
+        frame = {"png": "iVBORw0K", "width": 1280, "height": 800, "state_hash": "h1"}
+        self.api.routes[("POST", "/v1/worlds/w_abc/environments/env_1/step")] = reply(200, {**STEP_OK, "frame": frame})
+        r = env.step({"family": "keyboard.v1", "op": "type", "payload": {"text": "x"}}, render={"if_changed": True})
+        self.assertEqual(r["frame"]["png"], "iVBORw0K")
+        self.assertEqual(self.api.requests[-1]["body"]["render"], {"width": 1280, "height": 800, "if_changed": True})
+        self.api.routes[("PUT", "/v1/worlds/w_abc/files")] = lambda req: reply(200, {"machine": "workstation", "path": req["query"]["path"], "bytes": 3, "got": req["body"]})
+        self.assertEqual(world.write_file("/home/ada/a.txt", "hey", machine="workstation")["got"], {"content": "hey"})
+        self.assertEqual(self.api.requests[-1]["query"], {"machine": "workstation", "path": "/home/ada/a.txt"})
+        world.write_file("/home/ada/b.bin", b"\x00\xff")
+        self.assertEqual(self.api.requests[-1]["body"], {"base64": "AP8="})
+        self.api.routes[("GET", "/v1/worlds/w_abc/files")] = reply(200, {"machine": "workstation", "path": "/home/ada/a.txt", "content": "hey", "base64": "aGV5", "bytes": 3})
+        self.assertEqual(world.read_file("/home/ada/a.txt")["content"], "hey")
+        self.assertEqual(self.api.requests[-1]["query"], {"path": "/home/ada/a.txt"})
+
+    def test_agent_models_on_openai_paths(self) -> None:
+        self.api.routes[("GET", "/v1/models")] = reply(200, {"object": "list", "data": [{"id": "deepseek-flash"}, {"id": "glm-5.3-flash"}]})
+        self.assertEqual([m["id"] for m in self.client.models()], ["deepseek-flash", "glm-5.3-flash"])
+        self.api.routes[("POST", "/v1/chat/completions")] = reply(200, {"choices": [{"message": {"content": "hi"}}]})
+        self.assertEqual(self.client.chat({"model": "deepseek-flash", "messages": []})["choices"][0]["message"]["content"], "hi")
+        self.assertEqual(self.api.requests[-1]["body"]["model"], "deepseek-flash")
+
+
 class TransportTests(Base):
     def test_user_agent_and_bearer_are_always_sent(self) -> None:
         self.api.routes[("GET", "/v1/me")] = reply(200, {"user": {"username": "ada"}})
@@ -86,8 +115,8 @@ class TransportTests(Base):
         self.assertEqual(DEFAULT_BASE_URL, "https://computaco.ai/v1")
         self.assertEqual(Client("cw_live_x").base_url, "https://computaco.ai/v1")
         self.assertEqual(
-            Client("cw_live_x", base_url="https://computerworld.pages.dev").base_url,
-            "https://computerworld.pages.dev/v1",
+            Client("cw_live_x", base_url="https://dev.computaco.ai").base_url,
+            "https://dev.computaco.ai/v1",
         )
 
     def test_error_carries_code_message_and_status(self) -> None:

@@ -3,8 +3,8 @@
 A small client for the hosted ComputerWorld API at `https://computaco.ai/v1`.
 One ES module with no dependencies, for Node 18 or later and browsers, with TypeScript
 declarations beside it. The contract is [`openapi.yaml`](https://computaco.ai/openapi.yaml); the
-guide is [the hosted API docs](https://computaco.ai/docs/cloud-api), and
-[the clients guide](https://computaco.ai/docs/cloud-clients) covers this client and the [Python one](https://github.com/ComputaCo/computerworld/tree/main/python) together.
+guide is [the hosted API docs](https://computaco.ai/docs/cloud-api.html), and
+[the clients guide](https://computaco.ai/docs/cloud-clients.html) covers this client and the [Python one](https://github.com/ComputaCo/computerworld/tree/main/python) together.
 Get an API key at <https://computaco.ai/console/create-account.html>.
 
 ## Install

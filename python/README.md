@@ -3,7 +3,7 @@
 A small client for the hosted ComputerWorld API at `https://computaco.ai/v1`.
 Standard library only, Python 3.9 or later, typed (`py.typed`). The contract is
 [`openapi.yaml`](https://computaco.ai/openapi.yaml); the guide is
-[the hosted API docs](https://computaco.ai/docs/cloud-api), and [the clients guide](https://computaco.ai/docs/cloud-clients)
+[the hosted API docs](https://computaco.ai/docs/cloud-api.html), and [the clients guide](https://computaco.ai/docs/cloud-clients.html)
 covers this client and the [JavaScript one](https://github.com/ComputaCo/computerworld) together.
 Get an API key at <https://computaco.ai/console/create-account.html>.
 
@@ -14,7 +14,7 @@ It is not on PyPI. Install it from this repository:
 ```sh
 pip install "computerworld-cloud @ git+https://github.com/ComputaCo/computerworld.git#subdirectory=python"
 # a tag or commit:  ...computerworld.git@<ref>#subdirectory=python
-# from a checkout:  pip install .
+# from a checkout of this repository:  pip install ./python
 ```
 
 ## Use
@@ -37,8 +37,8 @@ with client.create_world("agent-desktop", seed=1) as world:      # deleted at th
     fork.delete()
 ```
 
-The names follow the local `computerworld` package, so code moves between a local
-`World` and a hosted one with few changes:
+The names follow the engine's own Python API (`computerworld`, the local engine), so code
+moves between a local `World` and a hosted one with few changes:
 
 | Local (`computerworld`) | Hosted (`computerworld_cloud`) |
 |---|---|

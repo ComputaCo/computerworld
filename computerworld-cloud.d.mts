@@ -109,6 +109,8 @@ export interface Outcome {
 
 export interface StepResult extends Clock {
   outcomes: Outcome[];
+  /** The screen the actions left, when the step asked for `render`. */
+  frame?: { png: string; width: number; height: number; state_hash: string };
   observation?: Json;
   pending?: number;
   elapsed_ms?: number;
@@ -244,8 +246,10 @@ export declare class Client {
   listWorlds(): Promise<WorldInfo[]>;
   createWorld(
     world?: string | null,
-    options?: { blueprint?: string; definition?: Json; seed?: number; platform?: string; name?: string },
+    options?: { blueprint?: string; definition?: Json; seed?: number; platform?: string; name?: string; idleTtl?: number },
   ): Promise<World>;
+  models(): Promise<Json[]>;
+  chat(body: Json): Promise<Json>;
   getWorld(id: string): Promise<World>;
   importWorld(bundle: Json, name?: string): Promise<World>;
 
@@ -266,6 +270,8 @@ export declare class World {
   refresh(): Promise<WorldInfo>;
   delete(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
+  readFile(path: string, options?: { machine?: string }): Promise<{ machine: string; path: string; content: string; base64: string; bytes: number }>;
+  writeFile(path: string, data: string | Uint8Array, options?: { machine?: string }): Promise<Clock & { machine: string; path: string; bytes: number }>;
 
   stateHash(): Promise<string>;
   clock(): Promise<Clock>;
@@ -318,7 +324,7 @@ export declare class Environment {
   height: number;
   static connect(token: string, envId: string, options?: ClientOptions & { worldId?: string }): Environment;
 
-  step(actions: Action | Action[]): Promise<StepResult>;
+  step(actions: Action | Action[], options?: { render?: { width?: number; height?: number; ifChanged?: boolean } }): Promise<StepResult>;
   observe(): Promise<{ channels: Json; tick: number }>;
   scene(options?: { width?: number; height?: number; elements?: boolean }): Promise<Scene>;
   render(options?: { width?: number; height?: number; format?: 'png' | 'rgba'; ifNoneMatch?: string }): Promise<Frame | null>;

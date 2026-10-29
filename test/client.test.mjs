@@ -54,6 +54,38 @@ async function boot() {
   return { world, env: await world.environment() };
 }
 
+describe('one computer', () => {
+  test('a step asks for the screen it leaves, files go both ways, and a world can be told to expire', async () => {
+    api.routes.set('POST /v1/worlds', reply(201, { ...WORLD, idle_ttl: 900 }));
+    api.routes.set('POST /v1/worlds/w_abc/environments', reply(201, GRANT));
+    const world = await client.createWorld('agent-desktop', { platform: 'ubuntu', idleTtl: 900 });
+    assert.deepEqual(api.last().body, { world: 'agent-desktop', seed: 1, platform: 'ubuntu', idle_ttl: 900 });
+    const env = await world.environment();
+    api.routes.set(`POST ${ENV}/step`, reply(200, { ...STEP_OK, frame: { png: 'iVBORw0K', width: 1280, height: 800, state_hash: 'h1' } }));
+    const r = await env.step([{ family: 'keyboard.v1', op: 'type', payload: { text: 'x' } }], { render: { ifChanged: true } });
+    assert.equal(r.frame.png, 'iVBORw0K');
+    assert.deepEqual(api.last().body.render, { width: 1280, height: 800, if_changed: true });
+    api.routes.set('PUT /v1/worlds/w_abc/files', (req) => reply(200, { machine: 'workstation', path: req.query.path, bytes: 3, state_hash: 'h2', tick: 0, got: req.body }));
+    const put = await world.writeFile('/home/ada/a.txt', 'hey', { machine: 'workstation' });
+    assert.deepEqual(put.got, { content: 'hey' });
+    assert.deepEqual(api.last().query, { machine: 'workstation', path: '/home/ada/a.txt' });
+    await world.writeFile('/home/ada/b.bin', new Uint8Array([0, 255]));
+    assert.deepEqual(api.last().body, { base64: 'AP8=' });
+    api.routes.set('GET /v1/worlds/w_abc/files', reply(200, { machine: 'workstation', path: '/home/ada/a.txt', content: 'hey', base64: 'aGV5', bytes: 3 }));
+    assert.equal((await world.readFile('/home/ada/a.txt')).content, 'hey');
+    assert.deepEqual(api.last().query, { path: '/home/ada/a.txt' });
+  });
+
+  test('the agent models answer on OpenAI\'s paths', async () => {
+    api.routes.set('GET /v1/models', reply(200, { object: 'list', data: [{ id: 'deepseek-flash' }, { id: 'glm-5.3-flash' }] }));
+    assert.deepEqual((await client.models()).map((m) => m.id), ['deepseek-flash', 'glm-5.3-flash']);
+    api.routes.set('POST /v1/chat/completions', reply(200, { object: 'chat.completion', choices: [{ message: { content: 'hi' } }] }));
+    const c = await client.chat({ model: 'deepseek-flash', messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(c.choices[0].message.content, 'hi');
+    assert.equal(api.last().body.model, 'deepseek-flash');
+  });
+});
+
 describe('transport', () => {
   test('the version matches package.json', () => {
     assert.equal(VERSION, JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version);
@@ -79,10 +111,10 @@ describe('transport', () => {
     assert.equal(normalizeBaseUrl('https://x.dev/v1/'), 'https://x.dev/v1');
   });
 
-  test('the default is computaco.ai, and the older pages.dev name still works', () => {
+  test('the default is computaco.ai, and another base (the dev tier) can be given', () => {
     assert.equal(DEFAULT_BASE_URL, 'https://computaco.ai/v1');
     assert.equal(new Client('cw_live_x').baseUrl, 'https://computaco.ai/v1');
-    assert.equal(new Client('cw_live_x', { baseUrl: 'https://computerworld.pages.dev' }).baseUrl, 'https://computerworld.pages.dev/v1');
+    assert.equal(new Client('cw_live_x', { baseUrl: 'https://dev.computaco.ai' }).baseUrl, 'https://dev.computaco.ai/v1');
   });
 
   test('errors carry status, code and message', async () => {
