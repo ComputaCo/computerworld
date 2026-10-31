@@ -31,6 +31,13 @@ pip install "computerworld-cloud @ git+https://github.com/ComputaCo/computerworl
 
 See [python/README.md](python/README.md).
 
+## The engine's source
+
+This repository is the clients of the hosted API and the home of the engine's release assets
+(`engine-v0.3.0`). The engine's open-core source — the simulator, the SDK and module ABI, the
+application catalog, the fidelity tooling — is
+[ComputaCo/computerworld-engine](https://github.com/ComputaCo/computerworld-engine), MIT.
+
 ## Use
 
 ```js
