@@ -1,11 +1,11 @@
-"""The client and the handles it returns: ``World``, ``Environment``, ``Swarm``."""
+"""The client and the handles it returns: ``Simulation``, ``Agent``, ``Society``."""
 
 from __future__ import annotations
 
 import base64
 import json
 import os
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Union
 from urllib.parse import quote
 
 from ._http import Transport
@@ -24,33 +24,32 @@ def _q(segment: str) -> str:
     return quote(str(segment), safe="")
 
 
+def _id(thing: Union[str, Mapping[str, Any], Any]) -> str:
+    if isinstance(thing, str):
+        return thing
+    return thing["id"] if isinstance(thing, Mapping) else thing.id
+
+
 def _procedure_body(procedure: ProcedureLike) -> JSON:
-    """``"world/id"``, ``{"world", "id"}`` or a whole procedure → the API's ``procedure|ref``."""
+    """``"template/id"``, ``{"template", "id"}`` or a whole procedure → the API's ``ref|procedure``."""
     if isinstance(procedure, str):
-        world, sep, pid = procedure.partition("/")
-        if not sep or not world or not pid:
-            raise ValueError(f"a procedure reference is 'world/id', got {procedure!r}")
-        return {"ref": {"world": world, "id": pid}}
+        template, sep, pid = procedure.partition("/")
+        if not sep or not template or not pid:
+            raise ValueError(f"a procedure reference is 'template/id', got {procedure!r}")
+        return {"ref": {"template": template, "id": pid}}
     if "phases" in procedure:
         return {"procedure": dict(procedure)}
-    if "world" in procedure and "id" in procedure:
-        return {"ref": {"world": procedure["world"], "id": procedure["id"]}}
-    raise ValueError("a procedure is 'world/id', {'world', 'id'}, or a procedure with phases")
-
-
-def _society_body(society: ProcedureLike) -> JSON:
-    if isinstance(society, str):
-        world, sep, sid = society.partition("/")
-        if not sep or not world or not sid:
-            raise ValueError(f"a society reference is 'world/id', got {society!r}")
-        return {"ref": {"world": world, "id": sid}}
-    if set(society) <= {"world", "id"}:
-        return {"ref": dict(society)}
-    return {"spec": dict(society)}
+    if "template" in procedure and "id" in procedure:
+        return {"ref": {"template": procedure["template"], "id": procedure["id"]}}
+    raise ValueError("a procedure is 'template/id', {'template', 'id'}, or a procedure with phases")
 
 
 def _drop_none(body: Mapping[str, Any]) -> JSON:
     return {k: v for k, v in body.items() if v is not None}
+
+
+def _place(place: Union[str, Sequence[str], None]) -> Union[str, List[str], None]:
+    return place if place is None or isinstance(place, str) else list(place)
 
 
 class Frame(bytes):
@@ -139,15 +138,31 @@ class Client:
 
     @classmethod
     def signup(
-        cls, username: str, password: str, base_url: Optional[str] = None, **kw: Any
-    ) -> "tuple[Client, JSON]":
-        """Make an account; return a client holding its first API key, and the answer."""
+        cls,
+        username: str,
+        password: str,
+        base_url: Optional[str] = None,
+        *,
+        key_name: Optional[str] = None,
+        scopes: Optional[Sequence[str]] = None,
+        **kw: Any,
+    ) -> "tuple[Client, JSON, JSON]":
+        """Make an account, then an API key with its session (every scope unless ``scopes``
+        names some: simulations, templates, models, account). Return a client holding the
+        key, the account, and the key as made (its ``key`` is the secret, shown once)."""
         base = base_url or os.environ.get("COMPUTERWORLD_API_BASE") or DEFAULT_BASE_URL
         t = Transport(base, None, **kw)
-        answer = t.request(
+        resp = t.request(
             "POST", "/auth/signup", json_body={"username": username, "password": password}
+        )
+        cookie = resp.headers.get("set-cookie", "").split(";")[0]
+        key = t.request(
+            "POST",
+            "/keys",
+            json_body=_drop_none({"name": key_name, "scopes": None if scopes is None else list(scopes)}),
+            headers={"Cookie": cookie},
         ).json()
-        return cls(_transport=t.with_token(answer["api_key"]["key"])), answer
+        return cls(_transport=t.with_token(key["key"])), resp.json()["user"], key
 
     def health(self) -> JSON:
         return self._json("GET", "/health", auth=False)
@@ -156,18 +171,20 @@ class Client:
         """The account, its quotas and its usage."""
         return self._get("/me")
 
-    def update_me(
-        self, *, name: Any = _UNSET, email: Any = _UNSET, date_of_birth: Any = _UNSET
-    ) -> JSON:
+    def update_me(self, *, name: Any = _UNSET, date_of_birth: Any = _UNSET) -> JSON:
         """Set profile fields; a field left out is kept, ``None`` clears it."""
-        body = {
-            k: v
-            for k, v in (("name", name), ("email", email), ("date_of_birth", date_of_birth))
-            if v is not _UNSET
-        }
+        body = {k: v for k, v in (("name", name), ("date_of_birth", date_of_birth)) if v is not _UNSET}
         if not body:
-            raise ValueError("update_me needs at least one of name, email, date_of_birth")
+            raise ValueError("update_me needs at least one of name, date_of_birth")
         return self._json("PATCH", "/me", body)["user"]
+
+    def set_email(self, email: str) -> JSON:
+        """Set the account's e-mail address and send it a six-digit code; then ``verify_email(code)``."""
+        return self._json("POST", "/me/email", {"email": email})["email"]
+
+    def verify_email(self, code: str) -> JSON:
+        """Confirm the code: ``{user, email, standing, tag}`` (the tag an academic domain gave, or None)."""
+        return self._json("POST", "/me/email/verify", {"code": code})
 
     def usage(self, days: int = 30) -> List[JSON]:
         return self._get("/me/usage", days=days)["days"]
@@ -175,116 +192,135 @@ class Client:
     def list_keys(self) -> List[JSON]:
         return self._get("/keys")["keys"]
 
-    def create_key(self, name: Optional[str] = None) -> JSON:
-        """A new API key; its ``key`` field is the secret, shown once."""
-        return self._post("/keys", _drop_none({"name": name}))
+    def create_key(self, name: Optional[str] = None, scopes: Optional[Sequence[str]] = None) -> JSON:
+        """A new API key with ``scopes`` (default every one: simulations, templates, models,
+        account); its ``key`` field is the secret, shown once."""
+        return self._post(
+            "/keys", _drop_none({"name": name, "scopes": None if scopes is None else list(scopes)})
+        )
 
     def revoke_key(self, key_id: str) -> None:
         self._delete(f"/keys/{_q(key_id)}")
 
-    # -- catalog -----------------------------------------------------------------------------
+    # -- templates ---------------------------------------------------------------------------
 
-    def catalog_worlds(self) -> List[JSON]:
-        return self._get("/catalog/worlds")["worlds"]
+    def list_templates(self) -> List[JSON]:
+        """The built-in templates and the organization's own, one list (``source``: ``builtin`` | ``own``)."""
+        return self._get("/templates")["templates"]
 
-    def catalog_world(self, name: str) -> JSON:
-        """A built-in world's whole definition."""
-        return self._get(f"/catalog/worlds/{_q(name)}")
+    def get_template(self, template_id: str) -> JSON:
+        """A template's definition."""
+        return self._get(f"/templates/{_q(template_id)}")
 
-    def catalog_procedures(self, world: Optional[str] = None) -> List[JSON]:
-        return self._get("/catalog/procedures", world=world)["procedures"]
+    def create_template(self, definition: JSON, *, name: Optional[str] = None) -> JSON:
+        """Save a definition as one of the organization's templates."""
+        return self._post("/templates", _drop_none({"name": name, "definition": definition}))
 
-    def catalog_procedure(self, world: str, procedure_id: str) -> JSON:
-        return self._get(f"/catalog/procedures/{_q(world)}/{_q(procedure_id)}")
+    def update_template(
+        self, template_id: str, *, name: Optional[str] = None, definition: Optional[JSON] = None
+    ) -> JSON:
+        return self._json(
+            "PUT", f"/templates/{_q(template_id)}", _drop_none({"name": name, "definition": definition})
+        )
 
-    def catalog_societies(self) -> List[JSON]:
-        return self._get("/catalog/societies")["societies"]
+    def delete_template(self, template_id: str) -> None:
+        self._delete(f"/templates/{_q(template_id)}")
 
-    def catalog_society(self, world: str, society_id: str) -> JSON:
-        return self._get(f"/catalog/societies/{_q(world)}/{_q(society_id)}")
+    def template_topology(self, template_id: str) -> JSON:
+        return self._get(f"/templates/{_q(template_id)}/topology")
+
+    def edit_template_topology(self, template_id: str, edits: Sequence[JSON]) -> JSON:
+        """Apply ``[{op: ...}, ...]`` in order, all or nothing; return the new topology."""
+        return self._post(f"/templates/{_q(template_id)}/topology", {"edits": list(edits)})
+
+    def template_procedures(self, template_id: str) -> List[JSON]:
+        return self._get(f"/templates/{_q(template_id)}/procedures")["procedures"]
+
+    def template_procedure(self, template_id: str, procedure_id: str) -> JSON:
+        return self._get(f"/templates/{_q(template_id)}/procedures/{_q(procedure_id)}")
+
+    def instantiate(
+        self, template_id: str, procedure_id: str, seed: int = 1, overrides: Optional[JSON] = None
+    ) -> JSON:
+        """Draw an instance of a template's procedure."""
+        return self._post(
+            f"/templates/{_q(template_id)}/procedures/{_q(procedure_id)}/instantiate",
+            _drop_none({"seed": seed, "overrides": overrides}),
+        )
+
+    def template_societies(self, template_id: str) -> List[JSON]:
+        return self._get(f"/templates/{_q(template_id)}/societies")["societies"]
+
+    def template_society(self, template_id: str, society_id: str) -> JSON:
+        return self._get(f"/templates/{_q(template_id)}/societies/{_q(society_id)}")
 
     def vocabulary(self) -> JSON:
-        return self._get("/catalog/vocabulary")
+        return self._get("/vocabulary")
 
-    # -- blueprints --------------------------------------------------------------------------
+    def validate(self, definition: JSON, *, society: Optional[JSON] = None) -> JSON:
+        """Boot a definition with the engine and drop it: ``{ok, errors, machines, ...}``; with
+        ``society``, also the number of people it compiles to."""
+        return self._post("/validate", _drop_none({"definition": definition, "society": society}))
 
-    def list_blueprints(self) -> List[JSON]:
-        return self._get("/blueprints")["blueprints"]
+    # -- simulations ------------------------------------------------------------------------
 
-    def create_blueprint(
+    def list_simulations(self) -> List[JSON]:
+        return self._get("/simulations")["simulations"]
+
+    def create_simulation(
         self,
-        name: Optional[str] = None,
+        template: Optional[str] = None,
         *,
-        from_: Optional[str] = None,
-        definition: Optional[JSON] = None,
-    ) -> JSON:
-        """From a built-in world or blueprint id (``from_``), or a ``definition``."""
-        return self._post(
-            "/blueprints", _drop_none({"name": name, "from": from_, "definition": definition})
-        )
-
-    def get_blueprint(self, blueprint_id: str) -> JSON:
-        return self._get(f"/blueprints/{_q(blueprint_id)}")
-
-    def update_blueprint(
-        self, blueprint_id: str, *, name: Optional[str] = None, definition: Optional[JSON] = None
-    ) -> JSON:
-        return self._json(
-            "PUT",
-            f"/blueprints/{_q(blueprint_id)}",
-            _drop_none({"name": name, "definition": definition}),
-        )
-
-    def delete_blueprint(self, blueprint_id: str) -> None:
-        self._delete(f"/blueprints/{_q(blueprint_id)}")
-
-    def blueprint_topology(self, blueprint_id: str) -> JSON:
-        return self._get(f"/blueprints/{_q(blueprint_id)}/topology")
-
-    def edit_blueprint_topology(self, blueprint_id: str, edits: Sequence[JSON]) -> JSON:
-        """Apply ``[{op: ...}, ...]`` in order, all or nothing; return the new topology."""
-        return self._json(
-            "PATCH", f"/blueprints/{_q(blueprint_id)}/topology", {"edits": list(edits)}
-        )
-
-    def validate(self, definition: JSON) -> JSON:
-        """Boot a definition with the engine and drop it: ``{ok, errors, machines, ...}``."""
-        return self._post("/validate", {"definition": definition})
-
-    # -- worlds ------------------------------------------------------------------------------
-
-    def list_worlds(self) -> List[JSON]:
-        return self._get("/worlds")["worlds"]
-
-    def create_world(
-        self,
-        world: Optional[str] = None,
-        *,
-        blueprint: Optional[str] = None,
         definition: Optional[JSON] = None,
         seed: int = 1,
-        platform: Optional[str] = None,
         name: Optional[str] = None,
+        platform: Optional[str] = None,
+        society: Union[str, JSON, None] = None,
         idle_ttl: Optional[int] = None,
-    ) -> "World":
-        """Boot a world from a built-in world name, a blueprint id or a definition.
+        place: Union[str, Sequence[str], None] = None,
+    ) -> "Simulation":
+        """Boot a simulation from a template id or a definition.
 
-        ``idle_ttl`` (seconds): the service deletes the world after that long with no request to it.
+        ``society`` (``{"id" | "spec", "rule", "journal", "rounds"}``, or a template's society
+        id) adds simulated agents; ``"journal": "builtin"`` replays the recorded decisions.
+        ``idle_ttl`` (seconds): the service deletes the simulation after that long with no
+        request to it. ``place``: where it runs, a place's id (``"core"``, ``"office"``,
+        ``"media"``, ``"container"``), ``"do"`` or ``"container"``, or a list of those tried in
+        order; left out, a Durable Object first, and a container only for a stated reason.
+        ``info["place"]`` says where it runs and why, ``info["refused"]`` the places that
+        refused it.
         """
-        if sum(x is not None for x in (world, blueprint, definition)) != 1:
-            raise ValueError("pass exactly one of world, blueprint, definition")
+        if (template is None) == (definition is None):
+            raise ValueError("pass exactly one of template, definition")
         body = _drop_none(
             {
-                "world": world,
-                "blueprint": blueprint,
+                "template": template,
                 "definition": definition,
                 "seed": seed,
-                "platform": platform,
                 "name": name,
+                "platform": platform,
+                "society": {"id": society} if isinstance(society, str) else society,
                 "idle_ttl": idle_ttl,
+                "place": _place(place),
             }
         )
-        return World(self, self._post("/worlds", body))
+        return Simulation(self, self._post("/simulations", body))
+
+    def get_simulation(self, simulation_id: str) -> "Simulation":
+        return Simulation(self, self._get(f"/simulations/{_q(simulation_id)}"))
+
+    def import_simulation(
+        self,
+        bundle: JSON,
+        name: Optional[str] = None,
+        *,
+        place: Union[str, Sequence[str], None] = None,
+        idle_ttl: Optional[int] = None,
+    ) -> "Simulation":
+        """Boot a new simulation from what :meth:`Simulation.export_snapshot` returned;
+        ``place`` is as for :meth:`create_simulation`."""
+        body = _drop_none({"snapshot": bundle, "name": name, "place": _place(place), "idle_ttl": idle_ttl})
+        return Simulation(self, self._post("/simulations/import", body))
 
     # -- agent models (OpenAI's paths) ---------------------------------------------------------
 
@@ -296,84 +332,28 @@ class Client:
         """OpenAI chat completions: ``chat({"model": "deepseek-flash", "messages": [...]})``."""
         return self._post("/chat/completions", body)
 
-    def get_world(self, world_id: str) -> "World":
-        return World(self, self._get(f"/worlds/{_q(world_id)}"))
 
-    def import_world(self, bundle: JSON, name: Optional[str] = None) -> "World":
-        """Boot a new world from what :meth:`World.export_snapshot` returned."""
-        return World(self, self._post("/worlds/import", _drop_none({"snapshot": bundle, "name": name})))
-
-    # -- procedures --------------------------------------------------------------------------
-
-    def instantiate(
-        self, procedure: ProcedureLike, seed: int = 1, overrides: Optional[JSON] = None
-    ) -> JSON:
-        """Draw an instance: ``procedure`` is ``"world/id"``, ``{world, id}`` or a procedure."""
-        body = _procedure_body(procedure)
-        body.update(_drop_none({"seed": seed, "overrides": overrides}))
-        return self._post("/procedures/instantiate", body)
-
-    # -- swarms ------------------------------------------------------------------------------
-
-    def compile_swarm(
-        self, society: ProcedureLike, *, world: Optional[str] = None, seed: Optional[int] = None
-    ) -> JSON:
-        """The plan a society compiles to; ``society`` is ``"world/id"`` or a spec."""
-        body = _society_body(society)
-        body.update(_drop_none({"world": world, "seed": seed}))
-        return self._post("/swarms/compile", body)
-
-    def list_swarms(self) -> List[JSON]:
-        return self._get("/swarms")["swarms"]
-
-    def create_swarm(
-        self,
-        society: ProcedureLike,
-        *,
-        world: Optional[str] = None,
-        seed: Optional[int] = None,
-        name: Optional[str] = None,
-        journal: Union[str, Sequence[JSON], None] = None,
-    ) -> "Swarm":
-        """Compile and boot a society. ``journal="builtin"`` replays the recorded one."""
-        body = _society_body(society)
-        body.update(
-            _drop_none(
-                {
-                    "world": world,
-                    "seed": seed,
-                    "name": name,
-                    "journal": list(journal) if isinstance(journal, (list, tuple)) else journal,
-                }
-            )
-        )
-        return Swarm(self, self._post("/swarms", body))
-
-    def get_swarm(self, swarm_id: str) -> "Swarm":
-        return Swarm(self, self._get(f"/swarms/{_q(swarm_id)}"))
-
-
-class World:
-    """A running world the account owns: the hosted counterpart of ``computerworld.World``.
-
-    Use as a context manager to delete it on exit.
+class Simulation:
+    """A running simulation the organization owns: one world with its clock, machines,
+    snapshots, agents and forks. Use as a context manager to delete it on exit.
     """
 
     def __init__(self, client: Client, info: JSON) -> None:
         self._c = client
         self.info = info
         self.id: str = info["id"]
-        self._p = f"/worlds/{_q(self.id)}"
-        self._handles: Dict[str, Environment] = {}
-        for env in info.get("environments") or []:
-            if isinstance(env, dict) and env.get("token"):
-                handle = Environment._from_grant(client, self.id, env)
-                self._handles[handle.id] = handle
+        self._p = f"/simulations/{_q(self.id)}"
+        self._agents: Dict[str, Agent] = {}
+        for grant in info.get("agents") or []:
+            if isinstance(grant, dict) and grant.get("token"):
+                agent = Agent._from_grant(client, self.id, grant)
+                self._agents[agent.id] = agent
+        self.society = Society(client, self._p)
 
     def __repr__(self) -> str:
-        return f"World(id={self.id!r}, source={self.info.get('source')!r})"
+        return f"Simulation(id={self.id!r}, source={self.info.get('source')!r})"
 
-    def __enter__(self) -> "World":
+    def __enter__(self) -> "Simulation":
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -383,8 +363,12 @@ class World:
         self.info = self._c._get(self._p)
         return self.info
 
+    def rename(self, name: str) -> JSON:
+        self.info = self._c._json("PATCH", self._p, {"name": name})
+        return self.info
+
     def delete(self) -> None:
-        """Delete the world, its snapshots and its environments."""
+        """Delete the simulation, its snapshots and its agents."""
         self._c._delete(self._p)
 
     def read_file(self, path: str, *, machine: Optional[str] = None) -> JSON:
@@ -414,8 +398,8 @@ class World:
         return self._c._post(self._p + "/advance", _drop_none({"duration": duration, "ticks": ticks}))
 
     def reset(self, seed: Optional[int] = None) -> JSON:
-        """Back to the definition; environments are dropped."""
-        self._handles.clear()
+        """Back to the definition; external agents are dropped."""
+        self._agents.clear()
         return self._c._post(self._p + "/reset", _drop_none({"seed": seed}))
 
     def inspect(self, pointer: Optional[str] = None) -> Any:
@@ -455,76 +439,150 @@ class World:
     def remove_computer(self, machine_id: str) -> JSON:
         return self._c._json("DELETE", f"{self._p}/machines/{_q(machine_id)}")
 
-    # -- snapshots ----------------------------------------------------------------------------
+    # -- snapshots and history ----------------------------------------------------------------
 
     def snapshot(self, label: Optional[str] = None) -> JSON:
-        """Keep a snapshot; returns ``{id, state_hash, tick, bytes, ...}``."""
+        """Keep a snapshot; returns ``{id, label, state_hash, tick, bytes, parent, author,
+        frames, head, ...}``. It is the simulation's head now."""
         return self._c._post(self._p + "/snapshots", _drop_none({"label": label}))
 
     def snapshots(self) -> List[JSON]:
+        """The kept snapshots, oldest first. :meth:`history` and :meth:`refresh` name the head."""
         return self._c._get(self._p + "/snapshots")["snapshots"]
 
     def restore(self, snapshot: Union[str, JSON]) -> JSON:
-        sid = snapshot if isinstance(snapshot, str) else snapshot["id"]
-        return self._c._post(f"{self._p}/snapshots/{_q(sid)}/restore")
+        """Restore a snapshot: ``{state_hash, tick, head, elapsed_ms, conversations_kept, agents}``.
+        The agents, their connections and their threads become the snapshot's; an agent removed
+        after it comes back with a new ``token`` in ``agents``."""
+        return self._c._post(f"{self._p}/snapshots/{_q(_id(snapshot))}/restore")
 
-    def drop_snapshot(self, snapshot: Union[str, JSON]) -> None:
-        sid = snapshot if isinstance(snapshot, str) else snapshot["id"]
-        self._c._delete(f"{self._p}/snapshots/{_q(sid)}")
+    def snapshot_agents(self, snapshot: Union[str, JSON]) -> JSON:
+        """The agents a snapshot kept: ``{agents, conversations_kept}``."""
+        return self._c._get(f"{self._p}/snapshots/{_q(_id(snapshot))}/agents")
 
-    def fork(self, snapshot: Union[str, JSON, None] = None, name: Optional[str] = None) -> "World":
-        """A new world from now (or a kept snapshot), at the same state hash.
+    def snapshot_messages(self, snapshot: Union[str, JSON], agent: Union[str, JSON, "Agent"], after: int = 0) -> JSON:
+        """One agent's thread as a snapshot kept it: ``{messages, state}``, after ``after``."""
+        return self._c._get(f"{self._p}/snapshots/{_q(_id(snapshot))}/agents/{_q(_id(agent))}/messages", after=int(after))
 
-        The environments come over under new tokens: ``fork.session(env_id)``.
-        """
-        sid = snapshot if isinstance(snapshot, (str, type(None))) else snapshot["id"]
-        return World(self._c, self._c._post(self._p + "/fork", _drop_none({"snapshot": sid, "name": name})))
+    def drop_snapshot(self, snapshot: Union[str, JSON]) -> JSON:
+        """Drop a snapshot; its children hang from its parent. Returns what is left:
+        ``{snapshots, head}``."""
+        return self._c._json("DELETE", f"{self._p}/snapshots/{_q(_id(snapshot))}")
+
+    def snapshot_frame(self, snapshot: Union[str, JSON], machine: str) -> Frame:
+        """The PNG of a machine's screen when the snapshot was taken (a :class:`Frame`), for
+        each machine the snapshot's ``frames`` names."""
+        resp = self._c._t.request(
+            "GET",
+            f"{self._p}/snapshots/{_q(_id(snapshot))}/frames/{_q(machine)}",
+            headers={"Accept": "image/png"},
+        )
+        return Frame(resp.body, resp.headers, "png")
+
+    def history(self) -> JSON:
+        """The family's history: ``{simulation, simulations}``, the furthest ancestor first,
+        each with its place, origin, head and snapshots. No simulation is woken to answer."""
+        return self._c._get(self._p + "/history")
 
     def export_snapshot(self) -> JSON:
-        """A portable bundle; :meth:`Client.import_world` boots it."""
+        """A portable bundle; :meth:`Client.import_simulation` boots it."""
         return self._c._get(self._p + "/export")
 
-    # -- environments -------------------------------------------------------------------------
+    # -- forks --------------------------------------------------------------------------------
 
-    def environment(self, config: Optional[JSON] = None, **fields: Any) -> "Environment":
-        """Grant an environment (``actor``, ``machines``, ``actions``, ``observations``,
-        ``action_budget``, ``label``) and return a handle holding its actor token."""
+    def fork(
+        self,
+        *,
+        name: Optional[str] = None,
+        snapshot: Union[str, JSON, None] = None,
+        society_ops: Optional[Sequence[JSON]] = None,
+        place: Union[str, Sequence[str], None] = None,
+        idle_ttl: Optional[int] = None,
+    ) -> "Simulation":
+        """A new simulation copied from this one as it is now (``forked_from`` names this one).
+
+        A society comes over with its runner state and ``society_ops`` (an arm's rule ops)
+        applied to it. External agents come over under new tokens: ``fork.get_agent(agent_id)``.
+        ``snapshot`` forks from a kept snapshot. ``place`` is as for a new simulation; left
+        out, the fork runs where its parent does (``"do"`` moves a container's copy to a
+        Durable Object).
+        """
+        body = _drop_none(
+            {
+                "name": name,
+                "snapshot": None if snapshot is None else _id(snapshot),
+                "society_ops": list(society_ops) if society_ops is not None else None,
+                "place": _place(place),
+                "idle_ttl": idle_ttl,
+            }
+        )
+        return Simulation(self._c, self._c._post(self._p + "/fork", body))
+
+    def forks(self) -> List[str]:
+        """The ids of this simulation's forks."""
+        return self.refresh().get("forks") or []
+
+    # -- agents -------------------------------------------------------------------------------
+
+    def agent(self, config: Optional[JSON] = None, **fields: Any) -> "Agent":
+        """Grant an external agent (``actor``, ``machines``, ``actions``, ``observations``,
+        ``action_budget``, ``label``) and return its handle, which holds the actor token."""
         body = dict(config or {})
         body.update(_drop_none(fields))
-        grant = self._c._post(self._p + "/environments", body)
-        handle = Environment._from_grant(self._c, self.id, grant)
-        self._handles[handle.id] = handle
-        return handle
+        agent = Agent._from_grant(self._c, self.id, self._c._post(self._p + "/agents", body))
+        self._agents[agent.id] = agent
+        return agent
 
-    def environments(self) -> List[JSON]:
-        """The grants (never their tokens)."""
-        return self._c._get(self._p + "/environments")["environments"]
+    def hosted_agent(self, machine: Optional[str] = None, *, name: Optional[str] = None) -> "Agent":
+        """A hosted agent: one the platform runs (Computatrum's agent loop) on ``machine``, as its
+        user. Prompt it with ``agent.prompt(text)`` and follow its thread with ``agent.stream()``."""
+        made = self._c._post(self._p + "/agents", _drop_none({"kind": "hosted", "machine": machine, "name": name}))
+        return Agent._from_grant(self._c, self.id, made)
 
-    def session(self, env_id: str) -> "Environment":
-        """A handle on an existing environment: with its actor token when this object holds
-        it (it granted or forked it), otherwise acting with the owner's key."""
-        if env_id in self._handles:
-            return self._handles[env_id]
-        grant = self._c._get(f"{self._p}/environments/{_q(env_id)}")
-        return Environment._from_grant(self._c, self.id, grant)
+    def agents(self) -> List[JSON]:
+        """Every agent: the external ones (``kind: "external"``, never their tokens), the hosted
+        ones, and the society's people (``kind: "simulated"``)."""
+        return self._c._get(self._p + "/agents")["agents"]
 
-    def revoke(self, environment: Union[str, "Environment"]) -> None:
-        env_id = environment if isinstance(environment, str) else environment.id
-        self._handles.pop(env_id, None)
-        self._c._delete(f"{self._p}/environments/{_q(env_id)}")
+    def person(self, person_id: str) -> "Agent":
+        """A handle on one of the society's people, for its thread (what they did in the rounds;
+        it takes no prompt)."""
+        return Agent(self._c._t, self.id, person_id, grant={"id": person_id, "kind": "simulated"}, owner=self._c)
+
+    def get_agent(self, agent_id: str) -> "Agent":
+        """A handle on an external agent: with its actor token when this object holds it (it
+        granted it, or it is a fork that carried it), otherwise acting with the owner's key."""
+        if agent_id in self._agents:
+            return self._agents[agent_id]
+        grant = self._c._get(f"{self._p}/agents/{_q(agent_id)}")
+        return Agent._from_grant(self._c, self.id, grant)
+
+    def revoke(self, agent: Union[str, "Agent"]) -> None:
+        agent_id = _id(agent)
+        self._agents.pop(agent_id, None)
+        self._c._delete(f"{self._p}/agents/{_q(agent_id)}")
+
+    def connect_agent(self, agent: Union[str, "Agent"], machine: str) -> JSON:
+        """Connect an agent to a machine; returns the agent. It keeps its id, token and
+        thread, and its session is made again. A hosted agent drives one machine, so this
+        moves it."""
+        return self._c._json("PUT", f"{self._p}/agents/{_q(_id(agent))}/machines/{_q(machine)}")
+
+    def disconnect_agent(self, agent: Union[str, "Agent"], machine: str) -> JSON:
+        """Disconnect an agent from a machine; returns the agent."""
+        return self._c._json("DELETE", f"{self._p}/agents/{_q(_id(agent))}/machines/{_q(machine)}")
 
     def perform(
         self,
-        environment: Union[str, "Environment"],
+        agent: Union[str, "Agent"],
         gesture: JSON,
         *,
         width: Optional[int] = None,
         height: Optional[int] = None,
     ) -> JSON:
         """One grounded gesture, ``{"do": "click", "target": {"label": "Post"}}``, found on
-        the environment's screen the way a procedure finds it."""
-        env_id = environment if isinstance(environment, str) else environment.id
-        body: JSON = {"environment": env_id, "gesture": gesture}
+        the agent's screen the way a procedure finds it."""
+        body: JSON = {"agent": _id(agent), "gesture": gesture}
         options = _drop_none({"width": width, "height": height})
         if options:
             body["options"] = options
@@ -537,14 +595,12 @@ class World:
 
     def project(
         self,
-        environment: Union[str, "Environment", Mapping[str, Union[str, "Environment"]]],
+        agent: Union[str, "Agent", Mapping[str, Union[str, "Agent"]]],
         instance: JSON,
         options: Optional[JSON] = None,
     ) -> JSON:
-        """Perform an instance through an environment (or ``{role: environment}``)."""
-        body = _drop_none(
-            {"instance": instance, "environment": _env_ref(environment), "options": options}
-        )
+        """Perform an instance through an agent (or ``{role: agent}``)."""
+        body = _drop_none({"instance": instance, "agent": _agent_ref(agent), "options": options})
         return self._c._post(self._p + "/procedures/project", body)
 
     def verify(self, instance: JSON) -> JSON:
@@ -559,10 +615,10 @@ class World:
         include_steps: bool = False,
         options: Optional[JSON] = None,
         overrides: Optional[JSON] = None,
-        environment: Any = None,
+        agent: Any = None,
     ) -> JSON:
         """Instantiate, stage, project and verify in one call. ``fork=True`` runs it in a
-        throwaway copy and leaves this world as it was."""
+        throwaway copy and leaves this simulation as it was."""
         body = _procedure_body(procedure)
         body.update(
             _drop_none(
@@ -572,34 +628,35 @@ class World:
                     "include_steps": include_steps,
                     "options": options,
                     "overrides": overrides,
-                    "environment": _env_ref(environment) if environment is not None else None,
+                    "agent": _agent_ref(agent) if agent is not None else None,
                 }
             )
         )
         return self._c._post(self._p + "/procedures/run", body)
 
 
-def _env_ref(environment: Any) -> Any:
-    if isinstance(environment, Environment):
-        return environment.id
-    if isinstance(environment, Mapping):
-        return {role: _env_ref(env) for role, env in environment.items()}
-    return environment
+def _agent_ref(agent: Any) -> Any:
+    if isinstance(agent, Agent):
+        return agent.id
+    if isinstance(agent, Mapping):
+        return {role: _agent_ref(a) for role, a in agent.items()}
+    return agent
 
 
-class Environment:
-    """An actor's environment: the hosted counterpart of ``computerworld.Environment``.
+class Agent:
+    """An agent of a simulation, with its thread (``messages``, ``prompt``, ``stream``,
+    ``stop``); an external agent is also the actor's door to the simulation.
 
     Actor calls (``step``, ``observe``, ``scene``, ``render``) use the actor token when the
-    handle has one, so a handle can be given to an agent without the owner's key. ``width``
-    and ``height`` are the viewport the scene, the render and the pointer helpers use.
+    handle has one, so a handle can be given to an agent program without the owner's key.
+    ``width`` and ``height`` are the viewport the scene, the render and the pointer helpers use.
     """
 
     def __init__(
         self,
         transport: Transport,
-        world_id: str,
-        env_id: str,
+        simulation_id: str,
+        agent_id: str,
         *,
         token: Optional[str] = None,
         grant: Optional[JSON] = None,
@@ -608,41 +665,37 @@ class Environment:
         height: int = DEFAULT_HEIGHT,
     ) -> None:
         self._t = transport
-        self.world_id = world_id
-        self.id = env_id
+        self.simulation_id = simulation_id
+        self.id = agent_id
         self.token = token
         self.grant = grant or {}
         self._owner = owner
         self.width = width
         self.height = height
-        self._p = f"/worlds/{_q(world_id)}/environments/{_q(env_id)}"
+        self._p = f"/simulations/{_q(simulation_id)}/agents/{_q(agent_id)}"
 
     @classmethod
-    def _from_grant(cls, client: Client, world_id: str, grant: JSON) -> "Environment":
+    def _from_grant(cls, client: Client, simulation_id: str, grant: JSON) -> "Agent":
         token = grant.get("token")
         transport = client._t.with_token(token) if token else client._t
-        return cls(transport, world_id, grant["id"], token=token, grant=grant, owner=client)
+        return cls(transport, simulation_id, grant["id"], token=token, grant=grant, owner=client)
 
     @classmethod
     def connect(
         cls,
         token: str,
-        env_id: str,
+        simulation_id: str,
+        agent_id: str,
         *,
-        world_id: Optional[str] = None,
         base_url: Optional[str] = None,
         **kw: Any,
-    ) -> "Environment":
-        """An agent's handle from an actor token alone (``cwa_<world>_<secret>``)."""
-        if world_id is None:
-            if not token.startswith("cwa_") or token.count("_") < 2:
-                raise ValueError("pass world_id: the token does not name its world")
-            world_id = token[len("cwa_") :].rsplit("_", 1)[0]
+    ) -> "Agent":
+        """An agent's handle from an actor token alone."""
         base = base_url or os.environ.get("COMPUTERWORLD_API_BASE") or DEFAULT_BASE_URL
-        return cls(Transport(base, token, **kw), world_id, env_id, token=token)
+        return cls(Transport(base, token, **kw), simulation_id, agent_id, token=token)
 
     def __repr__(self) -> str:
-        return f"Environment(world_id={self.world_id!r}, id={self.id!r})"
+        return f"Agent(simulation_id={self.simulation_id!r}, id={self.id!r})"
 
     def close(self) -> None:
         """Close this thread's kept-alive connection (the handle stays usable)."""
@@ -703,6 +756,46 @@ class Environment:
         """The grant, as the API has it now."""
         self.grant = self._t.request("GET", self._p).json()
         return self.grant
+
+    # -- the thread ---------------------------------------------------------------------------
+
+    def _owner_t(self) -> Transport:
+        if self._owner is None or not self._owner._t.token:
+            raise ComputerWorldError("this is an owner call; this handle has only an actor token")
+        return self._owner._t
+
+    def messages(self, after: int = 0, wait: Optional[float] = None) -> JSON:
+        """The thread after the message ``after`` (0: from the start), ``{messages, state}``; with
+        ``wait`` (seconds, at most 25) a read with nothing new waits for a message."""
+        return self._t.request("GET", self._p + "/messages", params=_drop_none({"after": after, "wait": wait})).json()
+
+    def prompt(self, text: str) -> JSON:
+        """A prompt from the owner: ``{message, state}``. A hosted agent starts on it (or after
+        the task it is on)."""
+        return self._owner_t().request("POST", self._p + "/messages", json_body={"text": text}).json()
+
+    def post(self, role: str, text: str, **fields: Any) -> JSON:
+        """What an external agent writes into its own thread: ``role`` is ``agent``, ``action``
+        or ``status`` (with ``status=started | finished | stopped | failed``)."""
+        return self._t.request("POST", self._p + "/messages", json_body={"role": role, "text": text, **fields}).json()
+
+    def stop(self) -> JSON:
+        """Stop it (the owner): a hosted agent's task is cut short; an external agent's thread
+        says it was stopped. ``{state}``."""
+        return self._owner_t().request("POST", self._p + "/stop").json()
+
+    def stream(
+        self, after: int = 0, *, wait: float = 25, until: Optional[Callable[[JSON, str], bool]] = None
+    ) -> Iterator[JSON]:
+        """The thread's messages as they come, by long-polling; it ends when ``until(message,
+        state)`` is true of a message (or when the caller stops iterating)."""
+        while True:
+            page = self.messages(after, wait)
+            for m in page["messages"]:
+                after = m["seq"]
+                yield m
+                if until is not None and until(m, page["state"]):
+                    return
 
     # -- helpers ------------------------------------------------------------------------------
 
@@ -785,10 +878,10 @@ class Environment:
         return result
 
     def perform(self, gesture: JSON) -> JSON:
-        """One grounded gesture through this environment (an owner call: needs the API key)."""
+        """One grounded gesture through this agent (an owner call: needs the API key)."""
         if self._owner is None or not self._owner._t.token:
             raise ComputerWorldError("perform is an owner call; this handle has only an actor token")
-        return World(self._owner, {"id": self.world_id}).perform(
+        return Simulation(self._owner, {"id": self.simulation_id}).perform(
             self.id, gesture, width=self.width, height=self.height
         )
 
@@ -802,42 +895,24 @@ class ActionFailed(ComputerWorldError):
         super().__init__(f"{action['family']} {action['op']} failed: {json.dumps(outcome.get('error'))}")
 
 
-class Swarm:
-    """A society running over the API. Use as a context manager to delete it on exit."""
+class Society:
+    """A simulation's society: its simulated agents, their rules and rounds."""
 
-    def __init__(self, client: Client, info: JSON) -> None:
+    def __init__(self, client: Client, simulation_path: str) -> None:
         self._c = client
-        self.info = info
-        self.id: str = info["id"]
-        self._p = f"/swarms/{_q(self.id)}"
+        self._p = simulation_path + "/society"
 
     def __repr__(self) -> str:
-        return f"Swarm(id={self.id!r}, round={self.info.get('round')!r})"
+        return f"Society({self._p!r})"
 
-    def __enter__(self) -> "Swarm":
-        return self
+    def info(self) -> JSON:
+        """``{spec_id, people, round, rounds, metrics}``; ``NotFoundError`` when the simulation has none."""
+        return self._c._get(self._p)
 
-    def __exit__(self, *exc: Any) -> None:
-        self.delete()
-
-    def refresh(self) -> JSON:
-        self.info = self._c._get(self._p)
-        return self.info
-
-    def delete(self) -> None:
-        self._c._delete(self._p)
-
-    def run_rounds(
-        self, count: int = 1, *, ask_model: bool = False, arms: Optional[Sequence[str]] = None
-    ) -> JSON:
-        """Run rounds in every arm; ``pending`` lists LLM decisions the journal lacks."""
-        body = _drop_none({"count": count, "ask_model": ask_model or None, "arms": list(arms) if arms else None})
-        return self._c._post(self._p + "/rounds", body)
-
-    def fork(self) -> JSON:
-        """Fork the arms now, before ``fork_at``."""
-        self.info = self._c._post(self._p + "/fork")
-        return self.info
+    def run_rounds(self, count: int = 1, *, ask_model: bool = False) -> JSON:
+        """Run 1 to 100 rounds in this simulation only (a fork runs its own); ``pending``
+        lists the model decisions the journal lacks."""
+        return self._c._post(self._p + "/rounds", _drop_none({"count": count, "ask_model": ask_model or None}))
 
     def journal(self) -> List[JSON]:
         return _ndjson(self._c._t.request("GET", self._p + "/journal").body)
@@ -846,11 +921,11 @@ class Swarm:
         """Answers for pending decisions: ``[{key, reply}]``."""
         return self._c._post(self._p + "/journal", {"entries": list(entries)})
 
-    def trace(self, arm: Optional[str] = None, since: Optional[int] = None) -> List[JSON]:
-        resp = self._c._t.request("GET", self._p + "/trace", params={"arm": arm, "since": since})
-        return _ndjson(resp.body)
+    def trace(self, since: Optional[int] = None) -> List[JSON]:
+        return _ndjson(self._c._t.request("GET", self._p + "/trace", params={"since": since}).body)
 
     def summary(self) -> JSON:
+        """Outcomes per round for this simulation and each fork, their divergence and state hashes."""
         return self._c._get(self._p + "/summary")
 
 

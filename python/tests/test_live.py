@@ -3,7 +3,7 @@
     COMPUTERWORLD_API_KEY=cw_live_... python -m unittest tests/test_live.py -v
 
 It boots agent-desktop, clicks the editor's launcher, types, renders a PNG, runs the
-legal-engagement procedure in a fork, and deletes everything it made. Timings (client
+legal-engagement procedure in a fork, and deletes every simulation it made. Timings (client
 side, milliseconds) are printed at the end.
 """
 
@@ -42,37 +42,37 @@ class LiveSmoke(unittest.TestCase):
             with timed("health"):
                 self.assertTrue(client.health()["ok"])
             with timed("boot agent-desktop"):
-                world = client.create_world("agent-desktop", seed=1, name="sdk-smoke-python")
-            made.append(world)
-            with timed("grant environment"):
-                env = world.environment(label="smoke")
-            self.assertTrue(env.token.startswith("cwa_"))
+                simulation = client.create_simulation("agent-desktop", seed=1, name="sdk-smoke-python")
+            made.append(simulation)
+            with timed("grant agent"):
+                agent = simulation.agent(label="smoke")
+            self.assertTrue(agent.token.startswith("cwa_"))
 
             with timed("scene (elements)"):
-                launcher = env.find(interaction="shell:launch:editor")
+                launcher = agent.find(interaction="shell:launch:editor")
             with timed("step (click)"):
-                clicked = env.click(element=launcher)
+                clicked = agent.click(element=launcher)
             self.assertIn("window.opened", clicked["outcomes"][0]["effect"]["changed"])
-            text = env.find(role="textbox", label="Document text")
-            env.click(element=text)
+            text = agent.find(role="textbox", label="Document text")
+            agent.click(element=text)
             with timed("step (type)"):
-                env.type_text("Hello from computerworld-cloud-python")
+                agent.type_text("Hello from computerworld-cloud-python")
 
             with timed("render 1280x800 png"):
-                frame = env.render()
+                frame = agent.render()
             self.assertEqual(frame[:8], b"\x89PNG\r\n\x1a\n")
             self.assertEqual(struct.unpack(">II", frame[16:24]), (1280, 800))
-            self.assertEqual(frame.state_hash, world.state_hash())
+            self.assertEqual(frame.state_hash, simulation.state_hash())
             with timed("render 304"):
-                self.assertIsNone(env.render(if_none_match=frame.etag))
+                self.assertIsNone(agent.render(if_none_match=frame.etag))
 
-            with timed("snapshot"):
-                snap = world.snapshot("after-typing")
+            before = simulation.state_hash()
             with timed("fork"):
-                fork = world.fork(snap)
+                fork = simulation.fork()
             made.append(fork)
-            self.assertEqual(fork.state_hash(), snap["state_hash"])
-            self.assertTrue(fork.session(env.id).token not in (None, env.token))
+            self.assertEqual(fork.state_hash(), before)
+            self.assertEqual(fork.info.get("forked_from"), simulation.id)
+            self.assertTrue(fork.get_agent(agent.id).token not in (None, agent.token))
 
             with timed("procedure run legal-engagement"):
                 run = fork.run("agent-desktop/legal-engagement", seed=1)
@@ -80,17 +80,17 @@ class LiveSmoke(unittest.TestCase):
             TIMINGS["legal-engagement GUI actions"] = run["demonstration"].get("counts", {}).get("actions") or len(
                 run["demonstration"].get("steps") or []
             )
-            self.assertNotEqual(fork.state_hash(), world.state_hash())
+            self.assertNotEqual(fork.state_hash(), simulation.state_hash())
         finally:
             with timed("delete"):
-                for w in reversed(made):
+                for e in reversed(made):
                     try:
-                        w.delete()
+                        e.delete()
                     except NotFoundError:
                         pass
-        left = {w["id"] for w in client.list_worlds()}
-        self.assertFalse(left & {w.id for w in made})
-        env.close()
+        left = {e["id"] for e in client.list_simulations()}
+        self.assertFalse(left & {e.id for e in made})
+        agent.close()
         client.close()
 
     @classmethod

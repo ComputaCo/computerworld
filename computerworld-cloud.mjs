@@ -7,14 +7,14 @@
 //
 // Types are in computerworld-cloud.d.mts beside it. The contract is cloud/openapi.yaml.
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.3.0';
 export const DEFAULT_BASE_URL = 'https://computaco.ai/v1';
 export const USER_AGENT = `computerworld-cloud-js/${VERSION}`;
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 800;
 
 // 429 and 503 mean the request was not processed, so any method may be sent again.
-// 500, 502 and 504 may come after the world changed, so only idempotent methods retry.
+// 500, 502 and 504 may come after the simulation changed, so only idempotent methods retry.
 const ALWAYS_RETRY = new Set([429, 503]);
 const IDEMPOTENT_RETRY = new Set([500, 502, 504]);
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']);
@@ -220,31 +220,47 @@ export function center(element) {
   return [r.x + Math.floor(r.width / 2), r.y + Math.floor(r.height / 2)];
 }
 
+
 // ------------------------------------------------------------------------------- helpers
 
 const q = encodeURIComponent;
 const dropUndefined = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null));
+const idOf = (x) => (typeof x === 'string' ? x : x.id);
 
-function refBody(thing, kind) {
-  if (typeof thing === 'string') {
-    const i = thing.indexOf('/');
-    if (i <= 0 || i === thing.length - 1) throw new Error(`a ${kind} reference is 'world/id', got '${thing}'`);
-    return { ref: { world: thing.slice(0, i), id: thing.slice(i + 1) } };
-  }
-  if (thing && typeof thing === 'object') {
-    const keys = Object.keys(thing);
-    if (keys.length === 2 && 'world' in thing && 'id' in thing) return { ref: { world: thing.world, id: thing.id } };
-    return kind === 'procedure' ? { procedure: thing } : { spec: thing };
-  }
-  throw new Error(`a ${kind} is 'world/id', { world, id }, or a whole ${kind === 'procedure' ? 'procedure' : 'spec'}`);
+/** A picture answer as `{ bytes, etag, stateHash, tick, width, height, format }`. */
+async function frameOf(resp, format) {
+  const int = (name) => (resp.headers.get(name) == null ? null : Number(resp.headers.get(name)));
+  return {
+    bytes: new Uint8Array(await resp.arrayBuffer()),
+    etag: resp.headers.get('etag'),
+    stateHash: resp.headers.get('x-state-hash'),
+    tick: int('x-tick'),
+    width: int('x-width'),
+    height: int('x-height'),
+    format,
+  };
 }
 
-const envRef = (e) =>
-  e instanceof Environment
-    ? e.id
-    : e && typeof e === 'object'
-      ? Object.fromEntries(Object.entries(e).map(([role, x]) => [role, envRef(x)]))
-      : e;
+/** `'template/id'`, `{ template, id }`, or a whole procedure → the API's `ref | procedure`. */
+function procedureBody(procedure) {
+  if (typeof procedure === 'string') {
+    const i = procedure.indexOf('/');
+    if (i <= 0 || i === procedure.length - 1) throw new Error(`a procedure reference is 'template/id', got '${procedure}'`);
+    return { ref: { template: procedure.slice(0, i), id: procedure.slice(i + 1) } };
+  }
+  if (procedure && typeof procedure === 'object') {
+    if (Array.isArray(procedure.phases)) return { procedure };
+    if (procedure.template && procedure.id) return { ref: { template: procedure.template, id: procedure.id } };
+  }
+  throw new Error("a procedure is 'template/id', { template, id }, or a procedure with phases");
+}
+
+const agentRef = (a) =>
+  a instanceof Agent
+    ? a.id
+    : a && typeof a === 'object'
+      ? Object.fromEntries(Object.entries(a).map(([role, x]) => [role, agentRef(x)]))
+      : a;
 
 const ndjson = (text) =>
   text
@@ -279,11 +295,19 @@ export class Client {
     await this._t.request('DELETE', path);
   }
 
-  /** Make an account; resolves to `{ client, answer }` with a client holding its first API key. */
-  static async signup(username, password, { baseUrl, ...opts } = {}) {
+  /**
+   * Make an account, then an API key with its session (every scope unless `scopes` names some:
+   * simulations, templates, models, account). Resolves to `{ client, user, key }`: a client
+   * holding the key, the account, and the key as made (its `key` is the secret, shown once).
+   * Server side only: a browser does not let a script read the session cookie.
+   */
+  static async signup(username, password, { baseUrl, keyName, scopes, ...opts } = {}) {
     const t = new Transport(baseUrl ?? env('COMPUTERWORLD_API_BASE') ?? DEFAULT_BASE_URL, null, opts);
-    const answer = await t.json('POST', '/auth/signup', { username, password });
-    return { client: new Client(null, { transport: t.withToken(answer.api_key.key) }), answer };
+    const resp = await t.request('POST', '/auth/signup', { json: { username, password } });
+    const { user } = await resp.json();
+    const cookie = (resp.headers.get('set-cookie') ?? '').split(';')[0];
+    const key = await t.json('POST', '/keys', dropUndefined({ name: keyName, scopes }), { headers: { cookie } });
+    return { client: new Client(null, { transport: t.withToken(key.key) }), user, key };
   }
 
   // accounts
@@ -293,9 +317,17 @@ export class Client {
   me() {
     return this._get('/me');
   }
-  /** Set profile fields; a field left out is kept, `null` clears it. */
+  /** Set profile fields (name, date_of_birth); a field left out is kept, `null` clears it. */
   async updateMe(fields) {
     return (await this._t.json('PATCH', '/me', fields)).user;
+  }
+  /** Set the account's e-mail address and send it a six-digit code; then `verifyEmail(code)`. */
+  async setEmail(email) {
+    return (await this._t.json('POST', '/me/email', { email })).email;
+  }
+  /** Confirm the code: `{user, email, standing, tag}` (the tag an academic domain gave, or null). */
+  verifyEmail(code) {
+    return this._t.json('POST', '/me/email/verify', { code });
   }
   async usage(days = 30) {
     return (await this._get('/me/usage', { days })).days;
@@ -303,77 +335,91 @@ export class Client {
   async listKeys() {
     return (await this._get('/keys')).keys;
   }
-  createKey(name) {
-    return this._post('/keys', dropUndefined({ name }));
+  /** A new API key; `scopes` defaults to every one. Its `key` field is the secret, shown once. */
+  createKey(name, { scopes } = {}) {
+    return this._post('/keys', dropUndefined({ name, scopes }));
   }
   revokeKey(keyId) {
     return this._delete(`/keys/${q(keyId)}`);
   }
 
-  // catalog
-  async catalogWorlds() {
-    return (await this._get('/catalog/worlds')).worlds;
+  // templates
+  /** The built-in templates and the organization's own, one list (`source: 'builtin' | 'own'`). */
+  async listTemplates() {
+    return (await this._get('/templates')).templates;
   }
-  catalogWorld(name) {
-    return this._get(`/catalog/worlds/${q(name)}`);
+  /** A template's definition. */
+  getTemplate(id) {
+    return this._get(`/templates/${q(id)}`);
   }
-  async catalogProcedures(world) {
-    return (await this._get('/catalog/procedures', { world })).procedures;
+  /** Save a definition as one of the organization's templates. */
+  createTemplate({ name, definition } = {}) {
+    return this._post('/templates', dropUndefined({ name, definition }));
   }
-  catalogProcedure(world, id) {
-    return this._get(`/catalog/procedures/${q(world)}/${q(id)}`);
+  updateTemplate(id, { name, definition } = {}) {
+    return this._t.json('PUT', `/templates/${q(id)}`, dropUndefined({ name, definition }));
   }
-  async catalogSocieties() {
-    return (await this._get('/catalog/societies')).societies;
+  deleteTemplate(id) {
+    return this._delete(`/templates/${q(id)}`);
   }
-  catalogSociety(world, id) {
-    return this._get(`/catalog/societies/${q(world)}/${q(id)}`);
-  }
-  vocabulary() {
-    return this._get('/catalog/vocabulary');
-  }
-
-  // blueprints
-  async listBlueprints() {
-    return (await this._get('/blueprints')).blueprints;
-  }
-  /** From a built-in world or blueprint id (`from`), or a `definition`. */
-  createBlueprint({ name, from, definition } = {}) {
-    return this._post('/blueprints', dropUndefined({ name, from, definition }));
-  }
-  getBlueprint(id) {
-    return this._get(`/blueprints/${q(id)}`);
-  }
-  updateBlueprint(id, { name, definition } = {}) {
-    return this._t.json('PUT', `/blueprints/${q(id)}`, dropUndefined({ name, definition }));
-  }
-  deleteBlueprint(id) {
-    return this._delete(`/blueprints/${q(id)}`);
-  }
-  blueprintTopology(id) {
-    return this._get(`/blueprints/${q(id)}/topology`);
+  templateTopology(id) {
+    return this._get(`/templates/${q(id)}/topology`);
   }
   /** Apply `[{ op, ... }]` in order, all or nothing; resolves to the new topology. */
-  editBlueprintTopology(id, edits) {
-    return this._t.json('PATCH', `/blueprints/${q(id)}/topology`, { edits });
+  editTemplateTopology(id, edits) {
+    return this._post(`/templates/${q(id)}/topology`, { edits });
   }
-  validate(definition) {
-    return this._post('/validate', { definition });
+  async templateProcedures(id) {
+    return (await this._get(`/templates/${q(id)}/procedures`)).procedures;
+  }
+  templateProcedure(id, procedureId) {
+    return this._get(`/templates/${q(id)}/procedures/${q(procedureId)}`);
+  }
+  /** Draw an instance of a template's procedure. */
+  instantiate(template, procedureId, { seed = 1, overrides } = {}) {
+    return this._post(`/templates/${q(template)}/procedures/${q(procedureId)}/instantiate`, dropUndefined({ seed, overrides }));
+  }
+  async templateSocieties(id) {
+    return (await this._get(`/templates/${q(id)}/societies`)).societies;
+  }
+  templateSociety(id, societyId) {
+    return this._get(`/templates/${q(id)}/societies/${q(societyId)}`);
+  }
+  vocabulary() {
+    return this._get('/vocabulary');
+  }
+  /** Boot a definition with the engine and drop it; with `society`, also the people it compiles to. */
+  validate(definition, { society } = {}) {
+    return this._post('/validate', dropUndefined({ definition, society }));
   }
 
-  // worlds
-  async listWorlds() {
-    return (await this._get('/worlds')).worlds;
+  // simulations
+  async listSimulations() {
+    return (await this._get('/simulations')).simulations;
   }
   /**
-   * Boot a world: `createWorld('agent-desktop', { seed })`, or `{ blueprint }` / `{ definition }`.
-   * `idleTtl` (seconds): the service deletes the world after that long with no request to it.
+   * Boot a simulation: `createSimulation('agent-desktop', { seed })`, or
+   * `createSimulation(null, { definition })`. `society` (`{ id | spec, rule, journal, rounds }`,
+   * or a template's society id) adds simulated agents. `idleTtl` (seconds): the service deletes
+   * the simulation after that long with no request to it. `place`: where it runs, a place's id
+   * (`'core'`, `'office'`, `'media'`, `'container'`), `'do'` or `'container'`, or a list of
+   * those tried in order; left out, a Durable Object first, and a container only for a stated
+   * reason. `info.place` says where it runs and why, `info.refused` the places that refused it.
    */
-  async createWorld(world, { blueprint, definition, seed = 1, platform, name, idleTtl } = {}) {
-    if ([world, blueprint, definition].filter((x) => x != null).length !== 1) {
-      throw new Error('pass exactly one of world, blueprint, definition');
-    }
-    return new World(this, await this._post('/worlds', dropUndefined({ world, blueprint, definition, seed, platform, name, idle_ttl: idleTtl })));
+  async createSimulation(template, { definition, seed = 1, name, platform, society, idleTtl, place } = {}) {
+    if ((template == null) === (definition == null)) throw new Error('pass exactly one of template, definition');
+    const soc = typeof society === 'string' ? { id: society } : society;
+    return new Simulation(
+      this,
+      await this._post('/simulations', dropUndefined({ template, definition, seed, name, platform, society: soc, idle_ttl: idleTtl, place })),
+    );
+  }
+  async getSimulation(id) {
+    return new Simulation(this, await this._get(`/simulations/${q(id)}`));
+  }
+  /** Boot a new simulation from what `simulation.exportSnapshot()` returned; `place` is as for `createSimulation`. */
+  async importSimulation(bundle, name, { place, idleTtl } = {}) {
+    return new Simulation(this, await this._post('/simulations/import', dropUndefined({ snapshot: bundle, name, place, idle_ttl: idleTtl })));
   }
 
   // agent models (OpenAI's paths)
@@ -384,55 +430,35 @@ export class Client {
   chat(body) {
     return this._post('/chat/completions', body);
   }
-  async getWorld(id) {
-    return new World(this, await this._get(`/worlds/${q(id)}`));
-  }
-  /** Boot a new world from what `world.exportSnapshot()` returned. */
-  async importWorld(bundle, name) {
-    return new World(this, await this._post('/worlds/import', dropUndefined({ snapshot: bundle, name })));
-  }
-
-  // procedures
-  /** Draw an instance: `procedure` is `'world/id'`, `{ world, id }` or a whole procedure. */
-  instantiate(procedure, seed = 1, overrides) {
-    return this._post('/procedures/instantiate', { ...refBody(procedure, 'procedure'), ...dropUndefined({ seed, overrides }) });
-  }
-
-  // swarms
-  compileSwarm(society, { world, seed } = {}) {
-    return this._post('/swarms/compile', { ...refBody(society, 'society'), ...dropUndefined({ world, seed }) });
-  }
-  async listSwarms() {
-    return (await this._get('/swarms')).swarms;
-  }
-  /** Compile and boot a society. `journal: 'builtin'` replays the recorded one. */
-  async createSwarm(society, { world, seed, name, journal } = {}) {
-    return new Swarm(this, await this._post('/swarms', { ...refBody(society, 'society'), ...dropUndefined({ world, seed, name, journal }) }));
-  }
-  async getSwarm(id) {
-    return new Swarm(this, await this._get(`/swarms/${q(id)}`));
-  }
 }
 
-/** A running world the account owns: the hosted counterpart of the engine's `World`. */
-export class World {
+/** A running simulation the organization owns: one world with its clock, machines, snapshots, agents and forks. */
+export class Simulation {
   constructor(client, info) {
     this._c = client;
     this.info = info;
     this.id = info.id;
-    this._p = `/worlds/${q(this.id)}`;
-    this._handles = new Map();
-    for (const grant of Array.isArray(info.environments) ? info.environments : []) {
-      if (grant?.token) this._handles.set(grant.id, Environment._fromGrant(client, this.id, grant));
+    this._p = `/simulations/${q(this.id)}`;
+    this._agents = new Map();
+    for (const grant of Array.isArray(info.agents) ? info.agents : []) {
+      if (grant?.token) this._agents.set(grant.id, Agent._fromGrant(client, this.id, grant));
     }
+    this.society = new Society(client, this._p);
   }
 
   async refresh() {
     return (this.info = await this._c._get(this._p));
   }
-  /** Delete the world, its snapshots and its environments. */
+  async rename(name) {
+    return (this.info = await this._c._t.json('PATCH', this._p, { name }));
+  }
+  /** Delete the simulation, its snapshots and its agents. */
   delete() {
     return this._c._delete(this._p);
+  }
+  /** `await using sim = await client.createSimulation(...)` deletes it at the end of the block. */
+  [Symbol.asyncDispose ?? Symbol.for('Symbol.asyncDispose')]() {
+    return this.delete();
   }
   /** A file on a machine, as the owner reads it: `{ machine, path, content, base64, bytes }`. */
   readFile(path, { machine } = {}) {
@@ -442,10 +468,6 @@ export class World {
   writeFile(path, data, { machine } = {}) {
     const body = typeof data === 'string' ? { content: data } : { base64: btoa(Array.from(data, (b) => String.fromCharCode(b)).join('')) };
     return this._c._t.json('PUT', `${this._p}/files`, body, { params: dropUndefined({ machine, path }) });
-  }
-  /** `await using world = await client.createWorld(...)` deletes it at the end of the block. */
-  [Symbol.asyncDispose ?? Symbol.for('Symbol.asyncDispose')]() {
-    return this.delete();
   }
 
   // clock and state
@@ -461,8 +483,9 @@ export class World {
     if (('duration' in body) === ('ticks' in body)) throw new Error('pass one of duration or ticks');
     return this._c._post(`${this._p}/advance`, body);
   }
+  /** Back to the definition; external agents are dropped. */
   reset(seed) {
-    this._handles.clear();
+    this._agents.clear();
     return this._c._post(`${this._p}/reset`, dropUndefined({ seed }));
   }
   inspect(pointer) {
@@ -492,55 +515,123 @@ export class World {
     return this._c._t.json('DELETE', `${this._p}/machines/${q(machineId)}`);
   }
 
-  // snapshots
+  // snapshots and history
+  /** Keep a snapshot: `{ id, label, state_hash, tick, parent, author, frames, head, … }`. It is the simulation's head now. */
   snapshot(label) {
     return this._c._post(`${this._p}/snapshots`, dropUndefined({ label }));
   }
+  /** The kept snapshots, oldest first. `history()` and `refresh()` name the head. */
   async snapshots() {
     return (await this._c._get(`${this._p}/snapshots`)).snapshots;
   }
+  /**
+   * Restore a snapshot: `{ state_hash, tick, head, elapsed_ms, conversations_kept, agents }`. The agents,
+   * their connections and their threads become the snapshot's; an agent removed after it comes back
+   * with a new `token` in `agents`.
+   */
   restore(snapshot) {
-    const id = typeof snapshot === 'string' ? snapshot : snapshot.id;
-    return this._c._post(`${this._p}/snapshots/${q(id)}/restore`);
+    return this._c._post(`${this._p}/snapshots/${q(idOf(snapshot))}/restore`);
   }
+  /** The agents a snapshot kept: `{ agents, conversations_kept }`. */
+  snapshotAgents(snapshot) {
+    return this._c._get(`${this._p}/snapshots/${q(idOf(snapshot))}/agents`);
+  }
+  /** One agent's thread as a snapshot kept it: `{ messages, state }`, after `after`. */
+  snapshotMessages(snapshot, agent, { after = 0 } = {}) {
+    return this._c._t.json('GET', `${this._p}/snapshots/${q(idOf(snapshot))}/agents/${q(idOf(agent))}/messages`, undefined, { params: { after } });
+  }
+  /** Drop a snapshot; its children hang from its parent. Resolves to what is left: `{ snapshots, head }`. */
   dropSnapshot(snapshot) {
-    const id = typeof snapshot === 'string' ? snapshot : snapshot.id;
-    return this._c._delete(`${this._p}/snapshots/${q(id)}`);
+    return this._c._t.json('DELETE', `${this._p}/snapshots/${q(idOf(snapshot))}`);
   }
-  /** A new world from now (or a kept snapshot); its environments come over under new tokens. */
-  async fork(snapshot, name) {
-    const id = snapshot == null ? undefined : typeof snapshot === 'string' ? snapshot : snapshot.id;
-    return new World(this._c, await this._c._post(`${this._p}/fork`, dropUndefined({ snapshot: id, name })));
+  /**
+   * The PNG of a machine's screen when the snapshot was taken, for each machine the
+   * snapshot's `frames` names: `{ bytes, etag, stateHash, tick, width, height, format }`,
+   * a header the answer lacks being null.
+   */
+  async snapshotFrame(snapshot, machine) {
+    const resp = await this._c._t.request('GET', `${this._p}/snapshots/${q(idOf(snapshot))}/frames/${q(machine)}`, {
+      headers: { accept: 'image/png' },
+    });
+    return frameOf(resp, 'png');
+  }
+  /**
+   * The family's history: `{ simulation, simulations }`, the furthest ancestor first, each
+   * with its place, origin, head and snapshots. No simulation is woken to answer.
+   */
+  history() {
+    return this._c._get(`${this._p}/history`);
   }
   exportSnapshot() {
     return this._c._get(`${this._p}/export`);
   }
 
-  // environments
-  /** Grant an environment and resolve to a handle holding its actor token. */
-  async environment(config = {}) {
-    const grant = await this._c._post(`${this._p}/environments`, config);
-    const handle = Environment._fromGrant(this._c, this.id, grant);
-    this._handles.set(handle.id, handle);
-    return handle;
+  // forks
+  /**
+   * A new simulation copied from this one as it is now (`forked_from` names this one). A
+   * society comes over with its runner state, and `societyOps` (an arm's rule ops) are applied
+   * to it. External agents come over under new tokens: `fork.getAgent(id)`. `snapshot` forks from
+   * a kept snapshot. `place` is as for a new simulation; left out, the fork runs where its
+   * parent does (`'do'` moves a container's copy to a Durable Object).
+   */
+  async fork({ name, snapshot, societyOps, place, idleTtl } = {}) {
+    const body = dropUndefined({ name, snapshot: snapshot == null ? undefined : idOf(snapshot), society_ops: societyOps, place, idle_ttl: idleTtl });
+    return new Simulation(this._c, await this._c._post(`${this._p}/fork`, body));
   }
-  async environments() {
-    return (await this._c._get(`${this._p}/environments`)).environments;
+  /** The ids of this simulation's forks. */
+  async forks() {
+    return (await this.refresh()).forks ?? [];
   }
-  /** A handle on an existing environment: with its token if this object holds it, else the owner's key. */
-  async session(envId) {
-    if (this._handles.has(envId)) return this._handles.get(envId);
-    const grant = await this._c._get(`${this._p}/environments/${q(envId)}`);
-    return Environment._fromGrant(this._c, this.id, grant);
+
+  // agents
+  /** Grant an external agent and resolve to its handle, which holds the actor token. */
+  async agent(config = {}) {
+    const grant = await this._c._post(`${this._p}/agents`, config);
+    const agent = Agent._fromGrant(this._c, this.id, grant);
+    this._agents.set(agent.id, agent);
+    return agent;
   }
-  revoke(environment) {
-    const id = typeof environment === 'string' ? environment : environment.id;
-    this._handles.delete(id);
-    return this._c._delete(`${this._p}/environments/${q(id)}`);
+  /**
+   * A hosted agent: one the platform runs (Computatrum's agent loop) on `machine`, as its user.
+   * Prompt it with `agent.prompt(text)` and follow its thread with `agent.stream()`.
+   */
+  async hostedAgent(machine, { name } = {}) {
+    const made = await this._c._post(`${this._p}/agents`, dropUndefined({ kind: 'hosted', machine, name }));
+    return Agent._fromGrant(this._c, this.id, made);
   }
-  /** One grounded gesture, `{ do: 'click', target: { label: 'Post' } }`, found on the environment's screen. */
-  perform(environment, gesture, { width, height } = {}) {
-    const body = { environment: envRef(environment), gesture };
+  /** Every agent: the external ones (`kind: 'external'`, never their tokens), the hosted ones, and the society's people (`kind: 'simulated'`). */
+  async agents() {
+    return (await this._c._get(`${this._p}/agents`)).agents;
+  }
+  /** A handle on one of the society's people, for its thread (what they did in the rounds; it takes no prompt). */
+  person(personId) {
+    return new Agent(this._c._t, this.id, personId, { grant: { id: personId, kind: 'simulated' }, owner: this._c });
+  }
+  /** A handle on an external or hosted agent: with its token if this object holds it, else fetched with the owner's key. */
+  async getAgent(agentId) {
+    if (this._agents.has(agentId)) return this._agents.get(agentId);
+    const grant = await this._c._get(`${this._p}/agents/${q(agentId)}`);
+    return Agent._fromGrant(this._c, this.id, grant);
+  }
+  revoke(agent) {
+    const id = idOf(agent);
+    this._agents.delete(id);
+    return this._c._delete(`${this._p}/agents/${q(id)}`);
+  }
+  /**
+   * Connect an agent to a machine; resolves to the agent. It keeps its id, token and thread,
+   * and its session is made again. A hosted agent drives one machine, so this moves it.
+   */
+  connectAgent(agent, machine) {
+    return this._c._t.json('PUT', `${this._p}/agents/${q(idOf(agent))}/machines/${q(machine)}`);
+  }
+  /** Disconnect an agent from a machine; resolves to the agent. */
+  disconnectAgent(agent, machine) {
+    return this._c._t.json('DELETE', `${this._p}/agents/${q(idOf(agent))}/machines/${q(machine)}`);
+  }
+  /** One grounded gesture, `{ do: 'click', target: { label: 'Post' } }`, found on the agent's screen. */
+  perform(agent, gesture, { width, height } = {}) {
+    const body = { agent: agentRef(agent), gesture };
     const options = dropUndefined({ width, height });
     if (Object.keys(options).length) body.options = options;
     return this._c._post(`${this._p}/perform`, body);
@@ -550,53 +641,50 @@ export class World {
   stage(instance) {
     return this._c._post(`${this._p}/procedures/stage`, { instance });
   }
-  /** Perform an instance through an environment (or `{ role: environment }`). */
-  project(environment, instance, options) {
-    return this._c._post(`${this._p}/procedures/project`, dropUndefined({ instance, environment: envRef(environment), options }));
+  /** Perform an instance through an agent (or `{ role: agent }`). */
+  project(agent, instance, options) {
+    return this._c._post(`${this._p}/procedures/project`, dropUndefined({ instance, agent: agentRef(agent), options }));
   }
   verify(instance) {
     return this._c._post(`${this._p}/procedures/verify`, { instance });
   }
-  /** Instantiate, stage, project and verify. `fork: true` leaves this world as it was. */
-  run(procedure, { seed = 1, fork = false, includeSteps = false, options, overrides, environment } = {}) {
+  /** Instantiate, stage, project and verify. `fork: true` leaves this simulation as it was. */
+  run(procedure, { seed = 1, fork = false, includeSteps = false, options, overrides, agent } = {}) {
     return this._c._post(`${this._p}/procedures/run`, {
-      ...refBody(procedure, 'procedure'),
-      ...dropUndefined({ seed, fork, include_steps: includeSteps, options, overrides, environment: envRef(environment) }),
+      ...procedureBody(procedure),
+      ...dropUndefined({ seed, fork, include_steps: includeSteps, options, overrides, agent: agentRef(agent) }),
     });
   }
 }
 
 /**
- * An actor's environment. Actor calls use the actor token when the handle has one, so the
- * handle can be given to an agent without the owner's key. `width`/`height` are the viewport
- * the scene, the render and the pointer helpers use.
+ * An agent of a simulation, with its thread (`messages`, `prompt`, `stream`, `stop`); an
+ * external agent is also the actor's door to the simulation. Actor calls use the actor token when
+ * the handle has one, so the handle can be given to an agent program without the owner's key.
+ * `width`/`height` are the viewport the scene, the render and the pointer helpers use.
  */
-export class Environment {
-  constructor(transport, worldId, envId, { token = null, grant = {}, owner = null, width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT } = {}) {
+export class Agent {
+  constructor(transport, simulationId, agentId, { token = null, grant = {}, owner = null, width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT } = {}) {
     this._t = transport;
-    this.worldId = worldId;
-    this.id = envId;
+    this.simulationId = simulationId;
+    this.id = agentId;
     this.token = token;
     this.grant = grant;
     this._owner = owner;
     this.width = width;
     this.height = height;
-    this._p = `/worlds/${q(worldId)}/environments/${q(envId)}`;
+    this._p = `/simulations/${q(simulationId)}/agents/${q(agentId)}`;
   }
 
-  static _fromGrant(client, worldId, grant) {
+  static _fromGrant(client, simulationId, grant) {
     const t = grant.token ? client._t.withToken(grant.token) : client._t;
-    return new Environment(t, worldId, grant.id, { token: grant.token ?? null, grant, owner: client });
+    return new Agent(t, simulationId, grant.id, { token: grant.token ?? null, grant, owner: client });
   }
 
-  /** An agent's handle from an actor token alone (`cwa_<world>_<secret>`). */
-  static connect(token, envId, { worldId, baseUrl, ...opts } = {}) {
-    if (!worldId) {
-      if (!token.startsWith('cwa_') || token.split('_').length < 3) throw new Error('pass worldId: the token does not name its world');
-      worldId = token.slice(4, token.lastIndexOf('_'));
-    }
+  /** An agent's handle from an actor token alone. */
+  static connect(token, simulationId, agentId, { baseUrl, ...opts } = {}) {
     const t = new Transport(baseUrl ?? env('COMPUTERWORLD_API_BASE') ?? DEFAULT_BASE_URL, token, opts);
-    return new Environment(t, worldId, envId, { token });
+    return new Agent(t, simulationId, agentId, { token });
   }
 
   get config() {
@@ -634,19 +722,50 @@ export class Environment {
       ok: [304],
     });
     if (resp.status === 304) return null;
-    const int = (name) => (resp.headers.get(name) == null ? null : Number(resp.headers.get(name)));
-    return {
-      bytes: new Uint8Array(await resp.arrayBuffer()),
-      etag: resp.headers.get('etag'),
-      stateHash: resp.headers.get('x-state-hash'),
-      tick: int('x-tick'),
-      width: int('x-width'),
-      height: int('x-height'),
-      format,
-    };
+    return frameOf(resp, format);
   }
   async info() {
     return (this.grant = await this._t.json('GET', this._p));
+  }
+
+  // the thread
+  /** The owner's transport: prompts and stops are the owner's. */
+  get _ownerT() {
+    if (!this._owner?._t.token) throw new ComputerWorldError('this is an owner call; this handle has only an actor token');
+    return this._owner._t;
+  }
+  /**
+   * The thread after the message `after` (0: from the start), `{ messages, state }`; with `wait`
+   * (seconds, at most 25) a read with nothing new waits for a message.
+   */
+  messages({ after = 0, wait } = {}) {
+    return this._t.json('GET', `${this._p}/messages`, undefined, { params: dropUndefined({ after, wait }) });
+  }
+  /** A prompt from the owner: `{ message, state }`. A hosted agent starts on it (or after the task it is on). */
+  async prompt(text) {
+    return this._ownerT.json('POST', `${this._p}/messages`, { text });
+  }
+  /** What an external agent writes into its own thread: `{ role: 'agent' | 'action' | 'status', text, status?, … }`. */
+  post(message) {
+    return this._t.json('POST', `${this._p}/messages`, message);
+  }
+  /** Stop it (the owner): a hosted agent's task is cut short; an external agent's thread says it was stopped. `{ state }`. */
+  async stop() {
+    return this._ownerT.json('POST', `${this._p}/stop`);
+  }
+  /**
+   * The thread's messages as they come, by long-polling: `for await (const m of agent.stream()) …`.
+   * It ends when `until(message, state)` is true of a message, or when `signal` aborts.
+   */
+  async *stream({ after = 0, wait = 25, until, signal } = {}) {
+    while (!signal?.aborted) {
+      const { messages, state } = await this.messages({ after, wait });
+      for (const m of messages) {
+        after = m.seq;
+        yield m;
+        if (until?.(m, state)) return;
+      }
+    }
   }
 
   // helpers
@@ -686,36 +805,26 @@ export class Environment {
     if (check && !outcome.success) throw new ActionFailed(action, outcome);
     return result;
   }
-  /** One grounded gesture through this environment (an owner call: needs the API key). */
+  /** One grounded gesture through this agent (an owner call: needs the API key). */
   perform(gesture) {
     if (!this._owner?._t.token) throw new ComputerWorldError('perform is an owner call; this handle has only an actor token');
-    return new World(this._owner, { id: this.worldId }).perform(this.id, gesture, { width: this.width, height: this.height });
+    return new Simulation(this._owner, { id: this.simulationId }).perform(this.id, gesture, { width: this.width, height: this.height });
   }
 }
 
-/** A society running over the API. */
-export class Swarm {
-  constructor(client, info) {
+/** A simulation's society: its simulated agents, their rules and rounds. */
+export class Society {
+  constructor(client, simulationPath) {
     this._c = client;
-    this.info = info;
-    this.id = info.id;
-    this._p = `/swarms/${q(this.id)}`;
+    this._p = `${simulationPath}/society`;
   }
-  async refresh() {
-    return (this.info = await this._c._get(this._p));
+  /** `{ spec_id, people, round, rounds, metrics }`; a 404 when the simulation has no society. */
+  info() {
+    return this._c._get(this._p);
   }
-  delete() {
-    return this._c._delete(this._p);
-  }
-  [Symbol.asyncDispose ?? Symbol.for('Symbol.asyncDispose')]() {
-    return this.delete();
-  }
-  /** Run rounds in every arm; `pending` lists LLM decisions the journal lacks. */
-  runRounds(count = 1, { askModel, arms } = {}) {
-    return this._c._post(`${this._p}/rounds`, dropUndefined({ count, ask_model: askModel || undefined, arms }));
-  }
-  async fork() {
-    return (this.info = await this._c._post(`${this._p}/fork`));
+  /** Run 1 to 100 rounds in this simulation only (a fork runs its own); `pending` lists the model decisions the journal lacks. */
+  runRounds(count = 1, { askModel } = {}) {
+    return this._c._post(`${this._p}/rounds`, dropUndefined({ count, ask_model: askModel || undefined }));
   }
   async journal() {
     return ndjson(await (await this._c._t.request('GET', `${this._p}/journal`)).text());
@@ -724,9 +833,10 @@ export class Swarm {
   addJournal(entries) {
     return this._c._post(`${this._p}/journal`, { entries });
   }
-  async trace({ arm, since } = {}) {
-    return ndjson(await (await this._c._t.request('GET', `${this._p}/trace`, { params: { arm, since } })).text());
+  async trace({ since } = {}) {
+    return ndjson(await (await this._c._t.request('GET', `${this._p}/trace`, { params: { since } })).text());
   }
+  /** Outcomes per round for this simulation and each fork, their divergence and state hashes. */
   summary() {
     return this._c._get(`${this._p}/summary`);
   }

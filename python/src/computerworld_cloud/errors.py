@@ -12,7 +12,7 @@ class ComputerWorldError(Exception):
 class ApiError(ComputerWorldError):
     """The API answered with an error.
 
-    ``code`` is the API's error code (``not_found``, ``rate_limited``, ``invalid_world``, ...),
+    ``code`` is the API's error code (``not_found``, ``rate_limited``, ``invalid_definition``, ...),
     or ``http_<status>`` when the answer was not the API's JSON error (for instance a
     Cloudflare page in front of it). ``retry_after`` is the ``Retry-After`` header in
     seconds, when one was sent.
@@ -45,7 +45,7 @@ class AuthenticationError(ApiError):
 
 
 class PermissionDeniedError(ApiError):
-    """403: the credential may not do this (an actor token outside its environment)."""
+    """403: the credential may not do this (an actor token outside its simulation)."""
 
 
 class NotFoundError(ApiError):

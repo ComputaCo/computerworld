@@ -45,64 +45,92 @@ import { Client } from 'computerworld-cloud';
 
 const client = new Client(); // COMPUTERWORLD_API_KEY / COMPUTERWORLD_API_BASE, or new Client('cw_live_…', { baseUrl })
 
-const world = await client.createWorld('agent-desktop', { seed: 1 });
+const simulation = await client.createSimulation('agent-desktop', { seed: 1 });
 try {
-  const env = await world.environment();                    // holds the actor token
-  await env.click({ interaction: 'shell:launch:editor' });  // find in the scene, click its centre
-  await env.click({ role: 'textbox', label: 'Document text' });
-  await env.typeText('Hello');
-  const frame = await env.render();                         // { bytes: Uint8Array (PNG), etag, stateHash, tick, ... }
+  const agent = await simulation.agent();                    // an external agent; holds the actor token
+  await agent.click({ interaction: 'shell:launch:editor' });  // find in the scene, click its centre
+  await agent.click({ role: 'textbox', label: 'Document text' });
+  await agent.typeText('Hello');
+  const frame = await agent.render();                         // { bytes: Uint8Array (PNG), etag, stateHash, tick, ... }
 
-  const fork = await world.fork();                          // same state hash, new tokens
+  const fork = await simulation.fork();                      // same state hash, the agents under new tokens
   const run = await fork.run('agent-desktop/legal-engagement', { seed: 1 });
   console.log(run.verification.passed, await fork.stateHash());
   await fork.delete();
 } finally {
-  await world.delete();
+  await simulation.delete();
 }
 ```
 
-The names follow the engine's JavaScript and Python API, in camelCase:
-`createWorld` (for `new World(definition, seed)`), `world.environment(config)`,
-`session(id)`, `snapshot`, `restore`, `fork`, `exportSnapshot` / `client.importWorld`,
-`stateHash`, `inspect`, `definition`, `trajectory`, `reset`, `addComputer`,
-`removeComputer`, `client.instantiate`, `world.stage` / `project` / `verify` / `run`;
-and on an `Environment`, `step`, `observe`, `scene` and `render` (PNG bytes; `format: 'rgba'`
-for raw).
+Five words name everything here:
+
+- A **template** is a world definition you start a simulation from: built in, or one of
+  your organization's own. `listTemplates`, `getTemplate`, `createTemplate`,
+  `updateTemplate`, `deleteTemplate`, `templateTopology`, `editTemplateTopology`; a
+  built-in template's expert procedures (`templateProcedures`, `templateProcedure`,
+  `instantiate`) and societies (`templateSocieties`, `templateSociety`); `vocabulary` and
+  `validate`.
+- An **simulation** is one running world. `createSimulation(template, { seed, name, platform,
+  society, idleTtl, place })`, or `{ definition }` in place of a template; `listSimulations`,
+  `getSimulation`, `importSimulation(bundle, name, { place })`. `place` says where it runs:
+  a place's id (`'core'`, `'office'`, `'media'`, `'container'`), `'do'` or `'container'`, or a
+  list tried in order; left out, a Durable Object first. `info.place` answers where it runs
+  and why, `info.refused` the places that refused it. On an `Simulation`: `rename`, `delete`,
+  `readFile` / `writeFile`, `clock` / `stateHash`, `advance('30s')`, `reset`, `inspect`,
+  `definition`, `trajectory`, `serviceState` / `patchServiceState`, `topology`,
+  `addComputer` / `removeComputer`, `snapshot` / `snapshots` / `restore` (the agents and their conversations become the snapshot's) /
+  `snapshotAgents(snapshot)` / `snapshotMessages(snapshot, agent)` (what a snapshot kept) /
+  `dropSnapshot` (resolves to `{ snapshots, head }`), `snapshotFrame(snapshot, machine)` (the
+  PNG of a machine's screen at a snapshot), `history` (the family's snapshots, forks and
+  heads), `exportSnapshot`, and the expert procedures: `stage`, `project`, `verify`, `run`.
+- An **agent** acts in a simulation. `simulation.agent(config)` makes an external one (your
+  code, Computatrum) and returns an `Agent` holding its actor token, with `step`, `observe`,
+  `scene` and `render` (PNG bytes; `format: 'rgba'` for raw). `simulation.agents()` lists
+  every agent: the external ones and, with a society, its simulated people (`kind:
+  'simulated'`, no token). `simulation.getAgent(id)` and `simulation.revoke(agent)`;
+  `simulation.connectAgent(agent, machine)` and `disconnectAgent(agent, machine)` connect it
+  to a machine and disconnect it (it keeps its id, token and thread);
+  `simulation.perform(agent, gesture)` does one grounded gesture.
+- A **society** is the simulated people of a simulation, chosen when it boots
+  (`createSimulation('company-2026', { society: { id: 'rumor-cascade', journal: 'builtin' } })`).
+  `simulation.society` has `info`, `runRounds(count, { askModel })`, `journal` /
+  `addJournal`, `trace({ since })` and `summary`.
+- A **fork** is a simulation copied from another as it is now: `simulation.fork({ name,
+  snapshot, societyOps, place })`; left to itself it runs where its parent does. Its `info.forked_from` names the parent and the parent's `forks()` lists
+  them; each fork runs its own society rounds, and `society.summary()` on the parent
+  compares the outcomes per round of every fork.
 
 What else is here:
 
-- **Every route group.** `me`, `updateMe`, `usage`, `listKeys` / `createKey` / `revokeKey`;
-  `catalogWorlds`, `catalogProcedures`, `catalogSocieties`, `vocabulary`; `listBlueprints`,
-  `createBlueprint`, `updateBlueprint`, `blueprintTopology`, `editBlueprintTopology`,
-  `validate`; on a `World`: `advance('30s')`, `serviceState`, `patchServiceState`,
-  `topology`, `snapshots`, `dropSnapshot`, `perform`, `revoke`; `createSwarm` /
-  `compileSwarm` and a `Swarm` with `runRounds`, `fork`, `journal`, `addJournal`, `trace`,
-  `summary`; `Client.signup(username, password)`.
-- **Finding elements.** `env.find({ label, role, interaction, value, index })` resolves to
+- **Accounts.** `me`, `updateMe`, `setEmail` / `verifyEmail`, `usage`, `listKeys` / `createKey(name, { scopes })` /
+  `revokeKey`, `Client.signup(username, password, { scopes })` (makes the account, then one
+  key with its session; resolves to `{ client, user, key }`), and the agent models on
+  OpenAI's paths (`models`, `chat`). A key's `scopes` are any of `simulations`,
+  `templates`, `models`, `account` and `research`, every one when left out.
+- **Finding elements.** `agent.find({ label, role, interaction, value, index })` resolves to
   the frontmost interactive element matching every field given (a string matches exactly,
   a `RegExp` by `test`); `findAll` to all of them; a miss throws `ElementNotFound` naming
-  what is on screen. `env.click({...})` takes `x, y`, an `element`, or the same fields;
+  what is on screen. `agent.click({...})` takes `x, y`, an `element`, or the same fields;
   `press('Ctrl+S')` and `typeText` round it out. These helpers throw `ActionFailed` on an
   unsuccessful outcome (`check: false` to not). `findElements(scene, query)` and
   `center(element)` work on a scene already held.
-- **Agents without the owner's key.** `Environment.connect(token, 'env_1')` makes a handle
+- **Agents without the owner's key.** `Agent.connect(token, simulationId, agentId)` makes a handle
   from an actor token alone: step, observe, scene and render, nothing else.
 - **Retries.** A 429 or 503 is retried for any method; a 500, 502, 504 or a network
-  failure only for GET, PUT and DELETE (a POST that may have changed the world is not sent
-  twice). The wait is `Retry-After` when the API sends one, otherwise an exponential
+  failure only for GET, PUT and DELETE (a POST that may have changed the simulation is not
+  sent twice). The wait is `Retry-After` when the API sends one, otherwise an exponential
   backoff from 500 ms (jittered, at most 30 s); four retries by default (`maxRetries`), and
   a `Retry-After` over 120 s is thrown at once instead of waited.
 - **Errors.** `ApiError` carries `status`, `code` (the API's: `not_found`,
-  `rate_limited`, `quota_exceeded`, `invalid_world`, …), `detail` (its message),
+  `rate_limited`, `quota_exceeded`, `invalid_definition`, …), `detail` (its message),
   `retryAfter`, `method` and `path`; an answer that is not the API's JSON is
   `http_<status>`. A request that gets no answer is `ConnectionFailed`.
 - **User-Agent.** In Node (and Bun and Deno) every request sends
   `computerworld-cloud-js/<version>`, with your `userAgent` in front. A browser sends its
   own: a cross-origin `fetch` may not set `User-Agent`, and Cloudflare accepts browsers'.
-- **Cleanup.** `World` and `Swarm` implement `Symbol.asyncDispose`, so where
-  `await using` is available, `await using world = await client.createWorld(...)` deletes
-  the world at the end of the block.
+- **Cleanup.** `Simulation` implements `Symbol.asyncDispose`, so where `await using` is
+  available, `await using simulation = await client.createSimulation(...)` deletes the
+  simulation at the end of the block.
 
 ## Test
 
@@ -113,5 +141,5 @@ npm run typecheck                                 # tsc over test/types.check.mt
 ```
 
 The live test boots `agent-desktop`, clicks the editor's launcher, types, renders a PNG,
-forks, runs `legal-engagement` in the fork, deletes both worlds and checks they are gone,
+forks, runs `legal-engagement` in the fork, deletes both simulations and checks they are gone,
 printing client-side timings.
