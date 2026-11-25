@@ -62,6 +62,7 @@ jobs:
   names:
     if: inputs.what == 'names'
     strategy:
+      fail-fast: false
       matrix:
         name: [computaco, computatrum, computaco-core]
     runs-on: ubuntu-24.04
