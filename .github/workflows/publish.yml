@@ -56,6 +56,7 @@ jobs:
       - name: publish unless npm has this version
         run: |
           v=$(node -p "require('./package.json').version")
+          if ! npm view computerworld-cloud name >/dev/null 2>&1; then echo "computerworld-cloud is not on npm yet: its first version is published by a person, logged in"; exit 0; fi
           if npm view "computerworld-cloud@$v" version >/dev/null 2>&1; then echo "computerworld-cloud@$v is on npm"; exit 0; fi
           npm publish --access public --provenance
   names:
