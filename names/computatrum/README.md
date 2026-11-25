@@ -7,6 +7,6 @@ package. The real code will be published under this name in a later version.
 
 - ComputaCo: https://computaco.ai
 - The hosted API's clients today: `computerworld-cloud` on npm and PyPI (https://github.com/ComputaCo/computerworld)
-- The open engine: https://github.com/ComputaCo/computerworld-engine
+- The open engine: https://github.com/ComputaCo/computaco-core-public
 
 MIT licence.

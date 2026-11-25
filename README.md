@@ -32,7 +32,7 @@ See [python/README.md](python/README.md).
 This repository is where the clients of the hosted API are written, and the home of the engine's release assets
 (`engine-v0.3.0`). The engine's open-core source — the simulator, the SDK and module ABI, the
 application catalog, the fidelity tooling — is
-[ComputaCo/computerworld-engine](https://github.com/ComputaCo/computerworld-engine), MIT.
+[ComputaCo/computaco-core-public](https://github.com/ComputaCo/computaco-core-public), MIT.
 
 ## Use
 
