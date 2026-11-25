@@ -19,14 +19,23 @@ export async function startMock() {
   const server = createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
-    const raw = Buffer.concat(chunks).toString();
+    const bytes = Buffer.concat(chunks);
+    const raw = bytes.toString();
     const url = new URL(req.url, 'http://x');
+    // A form (an export: its bundle and snapshot) is recorded part by part: JSON parts parsed, the rest as bytes.
+    let body = null;
+    if ((req.headers['content-type'] ?? '').startsWith('multipart/form-data')) {
+      body = {};
+      for (const [k, v] of await new Response(bytes, { headers: { 'content-type': req.headers['content-type'] } }).formData()) {
+        body[k] = v.type === 'application/json' ? JSON.parse(await v.text()) : new Uint8Array(await v.arrayBuffer());
+      }
+    } else if (raw) body = JSON.parse(raw);
     const record = {
       method: req.method,
       path: url.pathname,
       query: Object.fromEntries(url.searchParams),
       headers: req.headers,
-      body: raw ? JSON.parse(raw) : null,
+      body,
     };
     requests.push(record);
     let route = routes.get(`${req.method} ${url.pathname}`);

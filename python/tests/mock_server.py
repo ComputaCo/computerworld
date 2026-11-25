@@ -23,6 +23,24 @@ def reply(status: int = 200, body: Any = None, headers: Optional[Dict[str, str]]
     return status, h, data
 
 
+def _body(kind: str, raw: bytes) -> Any:
+    """JSON, or a form (an export: its bundle and snapshot) part by part, JSON parts parsed."""
+    if kind.startswith("multipart/form-data"):
+        import email.parser
+        import email.policy
+
+        message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+            b"Content-Type: " + kind.encode() + b"\r\n\r\n" + raw
+        )
+        out = {}
+        for part in message.iter_parts():
+            data = part.get_payload(decode=True)
+            name = part.get_param("name", header="content-disposition")
+            out[name] = json.loads(data) if part.get_content_type() == "application/json" else data
+        return out
+    return json.loads(raw) if raw else None
+
+
 def error(status: int, code: str, message: str = "", headers=None) -> Reply:
     return reply(status, {"error": {"code": code, "message": message}}, headers)
 
@@ -51,7 +69,7 @@ class MockApi:
                     "path": url.path,
                     "query": {k: v[0] for k, v in parse_qs(url.query).items()},
                     "headers": {k.lower(): v for k, v in self.headers.items()},
-                    "body": json.loads(raw) if raw else None,
+                    "body": _body(self.headers.get("Content-Type") or "", raw),
                 }
                 mock.requests.append(req)
                 status, headers, data = mock._answer(req)

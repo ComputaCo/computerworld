@@ -33,7 +33,7 @@ See [python/README.md](python/README.md).
 
 ## The engine's source
 
-This repository is the clients of the hosted API and the home of the engine's release assets
+This repository is where the clients of the hosted API are written, and the home of the engine's release assets
 (`engine-v0.3.0`). The engine's open-core source — the simulator, the SDK and module ABI, the
 application catalog, the fidelity tooling — is
 [ComputaCo/computerworld-engine](https://github.com/ComputaCo/computerworld-engine), MIT.
@@ -73,11 +73,11 @@ Five words name everything here:
 - An **simulation** is one running world. `createSimulation(template, { seed, name, platform,
   society, idleTtl, place })`, or `{ definition }` in place of a template; `listSimulations`,
   `getSimulation`, `importSimulation(bundle, name, { place })`. `place` says where it runs:
-  a place's id (`'core'`, `'office'`, `'media'`, `'container'`), `'do'` or `'container'`, or a
-  list tried in order; left out, a Durable Object first. `info.place` answers where it runs
+  `'lightning'` or `'heavy'` (or a Lightning place's id: `'core'`, `'office'`, `'media'`), or a
+  list tried in order; left out, Lightning first. `info.place` answers where it runs
   and why, `info.refused` the places that refused it. On an `Simulation`: `rename`, `delete`,
   `readFile` / `writeFile`, `clock` / `stateHash`, `advance('30s')`, `reset`, `inspect`,
-  `definition`, `trajectory`, `serviceState` / `patchServiceState`, `topology`,
+  `definition`, `trajectory`, `serviceState` / `patchServiceState`, `asks` / `answerAsks`, `topology`,
   `addComputer` / `removeComputer`, `snapshot` / `snapshots` / `restore` (the agents and their conversations become the snapshot's) /
   `snapshotAgents(snapshot)` / `snapshotMessages(snapshot, agent)` (what a snapshot kept) /
   `dropSnapshot` (resolves to `{ snapshots, head }`), `snapshotFrame(snapshot, machine)` (the
@@ -116,8 +116,8 @@ What else is here:
   `center(element)` work on a scene already held.
 - **Agents without the owner's key.** `Agent.connect(token, simulationId, agentId)` makes a handle
   from an actor token alone: step, observe, scene and render, nothing else.
-- **Retries.** A 429 or 503 is retried for any method; a 500, 502, 504 or a network
-  failure only for GET, PUT and DELETE (a POST that may have changed the simulation is not
+- **Retries.** A 429, or a 503 with `Retry-After`, is retried for any method; a 500, 502, 504, a 503
+  without `Retry-After` (a failure on our side) or a network failure only for GET, PUT and DELETE (a POST that may have changed the simulation is not
   sent twice). The wait is `Retry-After` when the API sends one, otherwise an exponential
   backoff from 500 ms (jittered, at most 30 s); four retries by default (`maxRetries`), and
   a `Retry-After` over 120 s is thrown at once instead of waited.

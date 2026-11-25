@@ -17,10 +17,11 @@ from .errors import ApiError, ConnectionFailed, error_for
 USER_AGENT = f"computerworld-cloud-python/{__version__}"
 
 IDEMPOTENT = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
-# 429 and 503 mean the request was not processed, so any method may be sent again.
-# 500, 502 and 504 may come after the world changed, so only idempotent methods retry.
-ALWAYS_RETRY = frozenset({429, 503})
-IDEMPOTENT_RETRY = frozenset({500, 502, 504})
+# 429, and a 503 with Retry-After, mean the request was not processed, so any method may be sent again.
+# 500, 502, 504 and a 503 without Retry-After (a failure of ours, which the API answers 503 because the edge
+# replaces a 502's body) may come after the world changed, so only idempotent methods retry.
+ALWAYS_RETRY = frozenset({429})
+IDEMPOTENT_RETRY = frozenset({500, 502, 503, 504})
 
 
 def parse_retry_after(value: Optional[str], now: Optional[float] = None) -> Optional[float]:
@@ -59,6 +60,15 @@ class Response:
 
     def json(self) -> Any:
         return json.loads(self.body) if self.body else None
+
+
+def key_hint(base_url: str) -> str:
+    """What a refused key most often means: it was made on another deployment, whose accounts are
+    its own (dev.computaco.ai's keys are unknown to computaco.ai, and the other way round)."""
+    return (
+        f"This request went to {base_url}. A key works only with the API of the site where it was made: "
+        "set COMPUTERWORLD_API_BASE (or base_url) to that site's /v1, for example https://dev.computaco.ai/v1."
+    )
 
 
 class Transport:
@@ -159,6 +169,7 @@ class Transport:
         path: str,
         *,
         json_body: Any = None,
+        raw_body: Optional[Tuple[bytes, str]] = None,
         params: Optional[Mapping[str, Any]] = None,
         headers: Optional[Mapping[str, str]] = None,
         ok: Tuple[int, ...] = (),
@@ -178,6 +189,8 @@ class Transport:
         if json_body is not None:
             body = json.dumps(json_body).encode()
             send_headers["Content-Type"] = "application/json"
+        elif raw_body is not None:
+            body, send_headers["Content-Type"] = raw_body
         elif method in ("POST", "PUT", "PATCH"):
             body = b""
         if headers:
@@ -195,9 +208,11 @@ class Transport:
                 raise ConnectionFailed(f"{method} {self.base_url}{path}: {exc}") from exc
             if resp.status < 400 or resp.status in ok:
                 return resp
-            err = self._error(resp, method, path)
-            retryable = resp.status in ALWAYS_RETRY or (
-                resp.status in IDEMPOTENT_RETRY and method in IDEMPOTENT
+            err = self._error(resp, method, path, self.base_url)
+            retryable = (
+                resp.status in ALWAYS_RETRY
+                or (resp.status == 503 and err.retry_after is not None)
+                or (resp.status in IDEMPOTENT_RETRY and method in IDEMPOTENT)
             )
             if (
                 not retryable
@@ -214,7 +229,7 @@ class Transport:
         return min(self.max_backoff, self.backoff * (2**attempt)) * random.uniform(0.5, 1.0)
 
     @staticmethod
-    def _error(resp: Response, method: str, path: str) -> ApiError:
+    def _error(resp: Response, method: str, path: str, base_url: str = "") -> ApiError:
         retry_after = parse_retry_after(resp.headers.get("retry-after"))
         code, message, parsed = f"http_{resp.status}", "", None
         try:
@@ -229,6 +244,8 @@ class Transport:
             message = text[:300] or http.client.responses.get(resp.status, "")
             if "error code: 1010" in text:
                 message += " (Cloudflare refused the client's User-Agent)"
+        if resp.status == 401 and base_url:
+            message = (message + " " if message else "") + key_hint(base_url)
         return error_for(
             resp.status,
             code,

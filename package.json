@@ -9,11 +9,14 @@
     ".": {
       "types": "./computerworld-cloud.d.mts",
       "default": "./computerworld-cloud.mjs"
-    }
+    },
+    "./cw-ssh-transport.mjs": "./cw-ssh-transport.mjs"
   },
   "files": [
     "computerworld-cloud.mjs",
     "computerworld-cloud.d.mts",
+    "cw-ssh-transport.mjs",
+    "bin/cw-ssh-proxy.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -21,7 +24,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/client.test.mjs",
+    "test": "node --test test/client.test.mjs test/transport.test.mjs",
     "test:live": "node --test test/live.test.mjs",
     "typecheck": "tsc -p ."
   },
@@ -31,5 +34,8 @@
     "type": "git",
     "url": "git+https://github.com/ComputaCo/computerworld.git"
   },
-  "sideEffects": false
+  "sideEffects": false,
+  "bin": {
+    "cw-ssh-proxy": "./bin/cw-ssh-proxy.mjs"
+  }
 }

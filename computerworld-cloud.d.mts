@@ -3,17 +3,17 @@
 
 export type Json = Record<string, any>;
 /**
- * Where to run a simulation: a place's id, a kind word (`do`: the Durable Object place that
- * carries most of what the world launches; `container`), or a list of those tried in order.
+ * Where to run a simulation: `lightning` (starts at once; the Lightning place that carries most
+ * of what the world launches), `heavy` (room for big worlds and every application), a Lightning
+ * place's id, or a list of those tried in order.
  */
-export type PlaceChoice = 'do' | 'container' | 'core' | 'office' | 'media' | PlaceChoice[];
+export type PlaceChoice = 'lightning' | 'heavy' | 'core' | 'office' | 'media' | PlaceChoice[];
 /** Where a simulation runs. `reason` says why, on the simulation's own answers. */
 export interface Place {
+  /** A Lightning place's own id (`core`, `office`, `media`), or `heavy`. */
   id: string;
-  /** `do` (a Durable Object, 128 MB) or `container:<size>` (a container of its own). */
-  kind: string;
-  memory_mb: number;
-  /** True when it is counted in container-minutes. */
+  kind: 'lightning' | 'heavy';
+  /** True when it is counted in Heavy-minutes. */
   metered: boolean;
   /** The application modules it carries. */
   modules: string[];
@@ -54,7 +54,7 @@ export declare class ActionFailed extends ComputerWorldError {
 export interface TransportOptions {
   /** Per-request timeout in ms (default 120000). */
   timeout?: number;
-  /** Retries of a 429/503 (any method) or a 500/502/504 or network error (GET, PUT, DELETE). Default 4. */
+  /** Retries of a 429 or a 503 with Retry-After (any method), or a 500/502/503/504 or network error (GET, PUT, DELETE). Default 4. */
   maxRetries?: number;
   /** First backoff in ms (default 500), doubled each retry, jittered, capped at `maxBackoff` (30000). */
   backoff?: number;
@@ -257,6 +257,15 @@ export interface Frame {
   format: 'png' | 'rgba';
 }
 
+/** What `exportSnapshot` returns and `importSimulation` boots: the definition, seed and agents, and the engine's snapshot as bytes. */
+export interface ExportBundle extends Json {
+  format: string;
+  definition: Json;
+  seed: number;
+  state_hash: string | null;
+  snapshot: Uint8Array;
+}
+
 export interface Snapshot {
   id: string;
   label?: string;
@@ -407,10 +416,120 @@ export declare class Client {
     options?: { definition?: Json; seed?: number; name?: string; platform?: string; society?: string | SocietyChoice; idleTtl?: number; place?: PlaceChoice },
   ): Promise<Simulation>;
   getSimulation(id: string): Promise<Simulation>;
-  importSimulation(bundle: Json, name?: string, options?: { place?: PlaceChoice; idleTtl?: number }): Promise<Simulation>;
+  importSimulation(bundle: ExportBundle, name?: string, options?: { place?: PlaceChoice; idleTtl?: number }): Promise<Simulation>;
 
   models(): Promise<Json[]>;
   chat(body: Json): Promise<Json>;
+  /** The browser: a web browser on a simulated Linux machine whose whole screen is the browser. */
+  readonly browser: Browser;
+}
+
+export interface Viewport {
+  width: number;
+  height: number;
+}
+export interface BrowserOptions {
+  /** Pixels, 64–2560 wide and 64–1600 high; 1280×800 when left out. */
+  viewport?: Viewport;
+  /** Milliseconds of the machine's clock to run after the page loads (its timers fire), 0–30,000. */
+  waitMs?: number;
+  /** Draw the whole page, not only the viewport (screenshot and snapshot). */
+  fullPage?: boolean;
+}
+export interface Screenshot {
+  bytes: Uint8Array;
+  width: number | null;
+  height: number | null;
+  stateHash: string | null;
+  /** A whole page taller than the largest frame was cut at its foot. */
+  clipped: boolean;
+  /** Milliseconds the call held the browser for. */
+  browserMsUsed: number | null;
+}
+export interface PageContent {
+  url: string;
+  status: number;
+  title: string;
+  html: string;
+}
+export interface PageMarkdown {
+  url: string;
+  title: string;
+  markdown: string;
+}
+export interface PageLinks {
+  url: string;
+  links: { href: string; text: string }[];
+}
+export interface BrowserSessionInfo {
+  id: string;
+  /** The page on show, null before the session is sent anywhere. */
+  url: string | null;
+  title: string | null;
+  status: number | null;
+  viewport: Viewport;
+  idle_ttl_s: number;
+  expires_at: number | null;
+  created_at: number;
+  place: string | null;
+  state_hash: string;
+  tick: number;
+  [k: string]: any;
+}
+
+export declare class Browser {
+  screenshot(url: string, options?: BrowserOptions): Promise<Screenshot>;
+  content(url: string, options?: BrowserOptions): Promise<PageContent>;
+  markdown(url: string, options?: BrowserOptions): Promise<PageMarkdown>;
+  links(url: string, options?: BrowserOptions): Promise<PageLinks>;
+  snapshot(url: string, options?: BrowserOptions): Promise<PageContent & { screenshot: string }>;
+  createSession(options?: { url?: string; viewport?: Viewport; idleTtlS?: number; waitMs?: number }): Promise<BrowserSession>;
+  getSession(id: string): Promise<BrowserSession>;
+  listSessions(): Promise<BrowserSession[]>;
+}
+
+export declare class BrowserSession {
+  readonly id: string;
+  info: BrowserSessionInfo;
+  readonly url: string | null;
+  readonly viewport: Viewport;
+  refresh(): Promise<BrowserSessionInfo>;
+  /** Up to 64 `browser.v1`, `keyboard.v1` or `pointer.v1` actions, without `machine`. */
+  act(actions: Omit<Action, 'machine'>[]): Promise<{ id: string; outcomes: Outcome[]; state_hash: string; tick: number }>;
+  navigate(url: string): Promise<{ id: string; outcomes: Outcome[]; state_hash: string; tick: number }>;
+  screenshot(options?: { fullPage?: boolean }): Promise<Screenshot>;
+  content(): Promise<PageContent>;
+  markdown(): Promise<PageMarkdown>;
+  links(): Promise<PageLinks>;
+  delete(): Promise<void>;
+}
+
+/** A grant for a real client (docs § Ingress). The credential is in the answer that made it, and nowhere after. */
+export interface IngressGrant {
+  handle: string;
+  agent: string;
+  machine: string;
+  target?: { scheme: string; host: string; port: number; service: string };
+  created_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+  state: 'active' | 'expired' | 'revoked' | 'stale';
+  uses: number;
+  bytes: number;
+  credential?: string;
+  header?: string;
+}
+export interface Publication extends IngressGrant { kind: 'http'; url: string; methods: ['GET'] }
+export interface SshGrant extends IngressGrant {
+  kind: 'ssh';
+  login: string;
+  exec: boolean;
+  websocket_url: string;
+  public_key: string;
+  host_key?: string;
+  host_key_alias?: string;
+  known_hosts?: string;
+  ssh_command?: string;
 }
 
 export declare class Simulation {
@@ -433,6 +552,8 @@ export declare class Simulation {
   trajectory(): Promise<Json>;
   serviceState(serviceId: string): Promise<Json>;
   patchServiceState(serviceId: string, patch: Json): Promise<Clock>;
+  asks(): Promise<Json>;
+  answerAsks(options?: { services?: string[]; advance?: string | number; ask_model?: boolean }): Promise<Json>;
 
   topology(): Promise<Json>;
   addComputer(computer: Json, node?: Json, links?: Json[], theme?: string): Promise<Json>;
@@ -450,10 +571,18 @@ export declare class Simulation {
   /** The PNG of a machine's screen when the snapshot was taken. */
   snapshotFrame(snapshot: string | Snapshot, machine: string): Promise<Frame>;
   history(): Promise<History>;
-  exportSnapshot(): Promise<Json>;
+  exportSnapshot(): Promise<ExportBundle>;
 
   fork(options?: { name?: string; snapshot?: string | Snapshot; societyOps?: Json[]; place?: PlaceChoice; idleTtl?: number }): Promise<Simulation>;
   forks(): Promise<string[]>;
+
+  /** Publish one declared service to real HTTP clients (docs § Publications). */
+  publish(agent: string | Agent, host: string, port: number, options?: { machine?: string; ttl?: number }): Promise<Publication>;
+  publications(): Promise<Publication[]>;
+  /** Let a stock OpenSSH client act as `agent` through the cw-ssh-proxy helper (docs § SSH). */
+  ssh(agent: string | Agent, publicKey: string, options?: { machine?: string; exec?: boolean; forward?: { host: string; port: number }; ttl?: number }): Promise<SshGrant>;
+  sshGrants(): Promise<SshGrant[]>;
+  revokeGrant(grant: string | Publication | SshGrant, options?: { kind?: 'http' | 'ssh' }): Promise<unknown>;
 
   agent(config?: AgentConfig): Promise<Agent>;
   hostedAgent(machine?: string, options?: { name?: string }): Promise<Agent>;

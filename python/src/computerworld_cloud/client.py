@@ -48,6 +48,39 @@ def _drop_none(body: Mapping[str, Any]) -> JSON:
     return {k: v for k, v in body.items() if v is not None}
 
 
+def _bundle_form(bundle: Mapping[str, Any], **extra: Any) -> "tuple[bytes, str]":
+    """An export as the API carries it: a multipart form of the bundle's JSON (``bundle``),
+    the snapshot's bytes (``snapshot``) and each of ``extra`` as JSON."""
+    boundary = "cw" + os.urandom(16).hex()
+    fields = {k: v for k, v in bundle.items() if k != "snapshot"}
+    parts = [("bundle", "application/json", json.dumps(fields).encode())]
+    parts.append(("snapshot", "application/octet-stream", bytes(bundle["snapshot"])))
+    parts += [(k, "application/json", json.dumps(v).encode()) for k, v in extra.items()]
+    out = b""
+    for name, kind, data in parts:
+        out += (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{name}"\r\n'
+            f"Content-Type: {kind}\r\n\r\n"
+        ).encode() + data + b"\r\n"
+    return out + f"--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
+
+
+def _read_bundle(content_type: str, body: bytes) -> JSON:
+    """The bundle a form answer holds, with ``snapshot`` the engine's bytes."""
+    import email.parser
+    import email.policy
+
+    message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
+        b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body
+    )
+    parts = {p.get_param("name", header="content-disposition"): p.get_payload(decode=True) for p in message.iter_parts()}
+    if "bundle" not in parts or "snapshot" not in parts:
+        raise ValueError("the answer is not an export: it has no bundle or no snapshot")
+    bundle = json.loads(parts["bundle"])
+    bundle["snapshot"] = parts["snapshot"]
+    return bundle
+
+
 def _place(place: Union[str, Sequence[str], None]) -> Union[str, List[str], None]:
     return place if place is None or isinstance(place, str) else list(place)
 
@@ -81,8 +114,8 @@ class Client:
     """The owner's door to the hosted API, authenticated with an API key.
 
     ``api_key`` and ``base_url`` default to ``COMPUTERWORLD_API_KEY`` and
-    ``COMPUTERWORLD_API_BASE``. Requests that get a 429 or a 503 are retried for any method,
-    a 500, 502 or 504 only for GET, PUT and DELETE, with exponential backoff that waits as
+    ``COMPUTERWORLD_API_BASE``. Requests that get a 429, or a 503 with ``Retry-After``, are retried
+    for any method; a 500, 502, 504 or a 503 without it only for GET, PUT and DELETE, with exponential backoff that waits as
     long as ``Retry-After`` says.
     """
 
@@ -148,7 +181,7 @@ class Client:
         **kw: Any,
     ) -> "tuple[Client, JSON, JSON]":
         """Make an account, then an API key with its session (every scope unless ``scopes``
-        names some: simulations, templates, models, account). Return a client holding the
+        names some: simulations, browser, templates, models, account). Return a client holding the
         key, the account, and the key as made (its ``key`` is the secret, shown once)."""
         base = base_url or os.environ.get("COMPUTERWORLD_API_BASE") or DEFAULT_BASE_URL
         t = Transport(base, None, **kw)
@@ -284,9 +317,9 @@ class Client:
         ``society`` (``{"id" | "spec", "rule", "journal", "rounds"}``, or a template's society
         id) adds simulated agents; ``"journal": "builtin"`` replays the recorded decisions.
         ``idle_ttl`` (seconds): the service deletes the simulation after that long with no
-        request to it. ``place``: where it runs, a place's id (``"core"``, ``"office"``,
-        ``"media"``, ``"container"``), ``"do"`` or ``"container"``, or a list of those tried in
-        order; left out, a Durable Object first, and a container only for a stated reason.
+        request to it. ``place``: where it runs, ``"lightning"`` or ``"heavy"`` (or a Lightning
+        place's id: ``"core"``, ``"office"``, ``"media"``), or a list of those tried in order;
+        left out, Lightning first, and Heavy only for a stated reason.
         ``info["place"]`` says where it runs and why, ``info["refused"]`` the places that
         refused it.
         """
@@ -319,8 +352,9 @@ class Client:
     ) -> "Simulation":
         """Boot a new simulation from what :meth:`Simulation.export_snapshot` returned;
         ``place`` is as for :meth:`create_simulation`."""
-        body = _drop_none({"snapshot": bundle, "name": name, "place": _place(place), "idle_ttl": idle_ttl})
-        return Simulation(self, self._post("/simulations/import", body))
+        options = _drop_none({"name": name, "place": _place(place), "idle_ttl": idle_ttl})
+        form = _bundle_form(bundle, options=options)
+        return Simulation(self, self._t.request("POST", "/simulations/import", raw_body=form).json())
 
     # -- agent models (OpenAI's paths) ---------------------------------------------------------
 
@@ -331,6 +365,15 @@ class Client:
     def chat(self, body: JSON) -> JSON:
         """OpenAI chat completions: ``chat({"model": "deepseek-flash", "messages": [...]})``."""
         return self._post("/chat/completions", body)
+
+    # -- the browser -----------------------------------------------------------------------------
+
+    @property
+    def browser(self) -> "Browser":
+        """The browser: a web browser on a simulated Linux machine whose whole screen is the
+        browser. One-shot reads (``client.browser.screenshot(url)``) and sessions
+        (``client.browser.create_session()``)."""
+        return Browser(self)
 
 
 class Simulation:
@@ -419,6 +462,21 @@ class Simulation:
         """An owner write (JSON merge patch), recorded for replay."""
         return self._c._json("PATCH", f"{self._p}/services/{_q(service_id)}/state", patch)
 
+    def asks(self) -> JSON:
+        """The questions the world's sites have for a model, and when something is next due."""
+        return self._c._get(self._p + "/asks")
+
+    def answer_asks(self, services: Optional[List[str]] = None, advance: Optional[str] = None,
+                    ask_model: bool = True) -> JSON:
+        """Answer them from the simulation's journal, asking the platform's model on a miss;
+        `advance` ("30m") also moves the clock to each due time up to then."""
+        body: Dict[str, Any] = {"ask_model": ask_model}
+        if services is not None:
+            body["services"] = services
+        if advance is not None:
+            body["advance"] = advance
+        return self._c._json("POST", self._p + "/asks", body)
+
     # -- topology -----------------------------------------------------------------------------
 
     def topology(self) -> JSON:
@@ -485,8 +543,10 @@ class Simulation:
         return self._c._get(self._p + "/history")
 
     def export_snapshot(self) -> JSON:
-        """A portable bundle; :meth:`Client.import_simulation` boots it."""
-        return self._c._get(self._p + "/export")
+        """A portable bundle, which :meth:`Client.import_simulation` boots: the definition,
+        seed and agents, and ``snapshot``, the engine's bytes."""
+        resp = self._c._t.request("GET", self._p + "/export")
+        return _read_bundle(resp.headers.get("content-type", ""), resp.body)
 
     # -- forks --------------------------------------------------------------------------------
 
@@ -504,8 +564,8 @@ class Simulation:
         A society comes over with its runner state and ``society_ops`` (an arm's rule ops)
         applied to it. External agents come over under new tokens: ``fork.get_agent(agent_id)``.
         ``snapshot`` forks from a kept snapshot. ``place`` is as for a new simulation; left
-        out, the fork runs where its parent does (``"do"`` moves a container's copy to a
-        Durable Object).
+        out, the fork runs where its parent does (``"lightning"`` moves a Heavy simulation's copy
+        to Lightning).
         """
         body = _drop_none(
             {
@@ -521,6 +581,52 @@ class Simulation:
     def forks(self) -> List[str]:
         """The ids of this simulation's forks."""
         return self.refresh().get("forks") or []
+
+    # -- ingress (a real client's way in) ------------------------------------------------------
+
+    def publish(self, agent: Union[str, "Agent"], host: str, port: int, *, machine: Optional[str] = None, ttl: Optional[int] = None) -> JSON:
+        """Publish one of this world's services to real HTTP clients.
+
+        Each GET of ``url + path`` with ``header`` is ``agent``'s ``http.v1 / request`` from its machine to the
+        service. Returns the grant: ``url``, ``credential`` (shown once), ``header``, ``expires_at``. ``ttl`` is
+        in seconds (60 to 86400).
+        """
+        return self._c._post(self._p + "/publications", _drop_none({"agent": _id(agent), "host": host, "port": port, "machine": machine, "ttl_s": ttl}))
+
+    def publications(self) -> List[JSON]:
+        """This simulation's publications (never their credentials)."""
+        return self._c._get(self._p + "/publications")["grants"]
+
+    def ssh(
+        self,
+        agent: Union[str, "Agent"],
+        public_key: str,
+        *,
+        machine: Optional[str] = None,
+        exec: Optional[bool] = None,
+        forward: Optional[Mapping[str, Any]] = None,
+        ttl: Optional[int] = None,
+    ) -> JSON:
+        """Let a stock OpenSSH client act as ``agent``: each ``ssh ... 'command'`` is its ``terminal.v1 / execute``.
+
+        ``public_key`` is the client's OpenSSH public key line; ``forward={"host": ..., "port": ...}`` also allows
+        ``ssh -L`` to that one published service (``exec=False`` allows only that). Returns the grant with
+        ``login``, ``websocket_url``, ``credential`` (shown once), ``known_hosts``, ``host_key_alias`` and a
+        copyable ``ssh_command``, which runs through the ``cw-ssh-proxy`` helper (``npm i -g computerworld-cloud``).
+        Write the grant to a file with mode 0600 and name it in ``CW_SSH_GRANT``.
+        """
+        body = _drop_none({"agent": _id(agent), "public_key": public_key, "machine": machine, "exec": exec, "forward": dict(forward) if forward else None, "ttl_s": ttl})
+        return self._c._post(self._p + "/ssh", body)
+
+    def ssh_grants(self) -> List[JSON]:
+        """This simulation's SSH grants (never their credentials)."""
+        return self._c._get(self._p + "/ssh")["grants"]
+
+    def revoke_grant(self, grant: Union[str, Mapping[str, Any]], *, kind: Optional[str] = None) -> None:
+        """Revoke a publication or an SSH grant; the next request with it fails."""
+        handle = grant if isinstance(grant, str) else grant["handle"]
+        route = "ssh" if (kind or (None if isinstance(grant, str) else grant.get("kind"))) == "ssh" else "publications"
+        self._c._delete(f"{self._p}/{route}/{_q(handle)}")
 
     # -- agents -------------------------------------------------------------------------------
 
@@ -927,6 +1033,127 @@ class Society:
     def summary(self) -> JSON:
         """Outcomes per round for this simulation and each fork, their divergence and state hashes."""
         return self._c._get(self._p + "/summary")
+
+
+class Screenshot(Frame):
+    """A browser's screen as a PNG, with ``clipped`` (a whole page taller than the largest
+    frame was cut at its foot) and ``browser_ms_used`` (how long the call held the browser)."""
+
+    clipped: bool
+    browser_ms_used: Optional[int]
+
+    def __new__(cls, data: bytes, headers: Mapping[str, str]) -> "Screenshot":
+        self = super().__new__(cls, data, headers, "png")
+        self.clipped = headers.get("x-full-page-clipped") == "true"
+        used = headers.get("x-browser-ms-used", "")
+        self.browser_ms_used = int(used) if used.isdigit() else None
+        return self
+
+
+def _browser_body(url: str, viewport: Optional[Mapping[str, int]], wait_ms: Optional[int], full_page: Optional[bool]) -> JSON:
+    return _drop_none({"url": url, "viewport": None if viewport is None else dict(viewport), "wait_ms": wait_ms, "full_page": full_page})
+
+
+class Browser:
+    """The browser API (``client.browser``): one-shot calls, each in a throwaway session, and
+    sessions. ``viewport`` is ``{"width", "height"}`` in pixels (1280×800 when left out);
+    ``wait_ms`` runs the machine's clock that long after the page loads, so its timers fire."""
+
+    def __init__(self, client: Client) -> None:
+        self._c = client
+
+    def screenshot(self, url: str, *, viewport: Optional[Mapping[str, int]] = None, wait_ms: Optional[int] = None, full_page: Optional[bool] = None) -> Screenshot:
+        """The page at ``url`` drawn as a PNG; ``full_page`` draws the whole page."""
+        resp = self._c._t.request("POST", "/browser/screenshot", json_body=_browser_body(url, viewport, wait_ms, full_page), headers={"Accept": "image/png"})
+        return Screenshot(resp.body, resp.headers)
+
+    def content(self, url: str, *, viewport: Optional[Mapping[str, int]] = None, wait_ms: Optional[int] = None) -> JSON:
+        """``{url, status, title, html}``: the page's markup after its script ran."""
+        return self._c._post("/browser/content", _browser_body(url, viewport, wait_ms, None))
+
+    def markdown(self, url: str, *, viewport: Optional[Mapping[str, int]] = None, wait_ms: Optional[int] = None) -> JSON:
+        """``{url, title, markdown}``."""
+        return self._c._post("/browser/markdown", _browser_body(url, viewport, wait_ms, None))
+
+    def links(self, url: str, *, viewport: Optional[Mapping[str, int]] = None, wait_ms: Optional[int] = None) -> JSON:
+        """``{url, links: [{href, text}]}``."""
+        return self._c._post("/browser/links", _browser_body(url, viewport, wait_ms, None))
+
+    def snapshot(self, url: str, *, viewport: Optional[Mapping[str, int]] = None, wait_ms: Optional[int] = None, full_page: Optional[bool] = None) -> JSON:
+        """``{url, status, title, html, screenshot}``, the screenshot a base64 PNG."""
+        return self._c._post("/browser/snapshot", _browser_body(url, viewport, wait_ms, full_page))
+
+    def create_session(self, url: Optional[str] = None, *, viewport: Optional[Mapping[str, int]] = None, idle_ttl_s: Optional[int] = None, wait_ms: Optional[int] = None) -> "BrowserSession":
+        """Open a session, at ``url`` when given; ``idle_ttl_s`` (default 300) deletes it after that long unused."""
+        body = _drop_none({"url": url, "viewport": None if viewport is None else dict(viewport), "idle_ttl_s": idle_ttl_s, "wait_ms": wait_ms})
+        return BrowserSession(self._c, self._c._post("/browser/sessions", body))
+
+    def get_session(self, session_id: str) -> "BrowserSession":
+        return BrowserSession(self._c, self._c._get(f"/browser/sessions/{_q(session_id)}"))
+
+    def list_sessions(self) -> List["BrowserSession"]:
+        return [BrowserSession(self._c, s) for s in self._c._get("/browser/sessions")["sessions"]]
+
+
+class BrowserSession:
+    """A browser session: a simulation whose machine's whole screen is the browser. Use it as a
+    context manager to delete it on the way out."""
+
+    def __init__(self, client: Client, info: JSON) -> None:
+        self._c = client
+        self.id: str = info["id"]
+        self.info = info
+        self._p = f"/browser/sessions/{_q(self.id)}"
+
+    def __repr__(self) -> str:
+        return f"BrowserSession(id={self.id!r}, url={self.info.get('url')!r})"
+
+    def __enter__(self) -> "BrowserSession":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.delete()
+
+    @property
+    def url(self) -> Optional[str]:
+        return self.info.get("url")
+
+    @property
+    def viewport(self) -> JSON:
+        return self.info["viewport"]
+
+    def refresh(self) -> JSON:
+        self.info = self._c._get(self._p)
+        return self.info
+
+    def act(self, actions: Sequence[JSON]) -> JSON:
+        """Up to 64 ``browser.v1``, ``keyboard.v1`` or ``pointer.v1`` actions
+        ``{family, op, payload}``: ``{outcomes, state_hash, tick}``."""
+        return self._c._post(self._p + "/actions", {"actions": list(actions)})
+
+    def navigate(self, url: str) -> JSON:
+        """Send the browser to ``url``; an unsuccessful navigation raises :class:`ActionFailed`."""
+        action = {"family": "browser.v1", "op": "navigate", "payload": {"url": url}}
+        r = self.act([action])
+        if not r["outcomes"][0].get("success"):
+            raise ActionFailed(action, r["outcomes"][0])
+        return r
+
+    def screenshot(self, *, full_page: bool = False) -> Screenshot:
+        resp = self._c._t.request("GET", self._p + "/screenshot", params={"full_page": True} if full_page else None, headers={"Accept": "image/png"})
+        return Screenshot(resp.body, resp.headers)
+
+    def content(self) -> JSON:
+        return self._c._get(self._p + "/content")
+
+    def markdown(self) -> JSON:
+        return self._c._get(self._p + "/markdown")
+
+    def links(self) -> JSON:
+        return self._c._get(self._p + "/links")
+
+    def delete(self) -> None:
+        self._c._delete(self._p)
 
 
 def _ndjson(body: bytes) -> List[JSON]:

@@ -124,6 +124,46 @@ describe('threads', () => {
   });
 });
 
+describe('the browser', () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const SESSION = { id: 'w_b1', url: 'https://example.com/', title: 'Example', status: 200, viewport: { width: 800, height: 600 }, idle_ttl_s: 300 };
+
+  test('one-shot calls send the page and its options, and a screenshot is its bytes and size', async () => {
+    api.routes.set('POST /v1/browser/screenshot', reply(200, PNG, { 'content-type': 'image/png', 'x-width': '640', 'x-height': '400', 'x-browser-ms-used': '91' }));
+    const shot = await client.browser.screenshot('https://example.com/', { viewport: { width: 640, height: 400 }, waitMs: 500, fullPage: true });
+    assert.deepEqual(api.last().body, { url: 'https://example.com/', viewport: { width: 640, height: 400 }, wait_ms: 500, full_page: true });
+    assert.deepEqual([...shot.bytes], [...PNG]);
+    assert.deepEqual([shot.width, shot.height, shot.clipped, shot.browserMsUsed], [640, 400, false, 91]);
+    for (const what of ['content', 'markdown', 'links', 'snapshot']) {
+      api.routes.set(`POST /v1/browser/${what}`, reply(200, { url: 'https://example.com/', what }));
+      assert.equal((await client.browser[what]('https://example.com/')).what, what);
+      assert.deepEqual(api.last().body, { url: 'https://example.com/' });
+    }
+  });
+
+  test('a session is made, driven, read, drawn and deleted', async () => {
+    api.routes.set('POST /v1/browser/sessions', reply(201, SESSION));
+    const s = await client.browser.createSession({ url: 'https://example.com/', viewport: { width: 800, height: 600 }, idleTtlS: 120 });
+    assert.deepEqual(api.last().body, { url: 'https://example.com/', viewport: { width: 800, height: 600 }, idle_ttl_s: 120 });
+    assert.equal(s.id, 'w_b1');
+    assert.deepEqual(s.viewport, { width: 800, height: 600 });
+    api.routes.set('POST /v1/browser/sessions/w_b1/actions', reply(200, { id: 'w_b1', outcomes: [{ success: false, error: { reason: 'unreachable' } }], state_hash: 'h', tick: 0 }));
+    await assert.rejects(s.navigate('https://nowhere.example/'), ActionFailed);
+    assert.deepEqual(api.last().body, { actions: [{ family: 'browser.v1', op: 'navigate', payload: { url: 'https://nowhere.example/' } }] });
+    api.routes.set('GET /v1/browser/sessions/w_b1/screenshot', reply(200, PNG, { 'content-type': 'image/png', 'x-width': '800', 'x-height': '3200', 'x-full-page-clipped': 'true' }));
+    const shot = await s.screenshot({ fullPage: true });
+    assert.deepEqual(api.last().query, { full_page: '1' });
+    assert.equal(shot.clipped, true);
+    api.routes.set('GET /v1/browser/sessions/w_b1/content', reply(200, { url: 'https://example.com/', status: 200, title: 'Example', html: '<html></html>' }));
+    assert.equal((await s.content()).html, '<html></html>');
+    api.routes.set('GET /v1/browser/sessions', reply(200, { sessions: [SESSION] }));
+    assert.deepEqual((await client.browser.listSessions()).map((x) => x.id), ['w_b1']);
+    api.routes.set('DELETE /v1/browser/sessions/w_b1', reply(204));
+    await s.delete();
+    assert.equal(api.last().method, 'DELETE');
+  });
+});
+
 describe('transport', () => {
   test('the version matches package.json', () => {
     assert.equal(VERSION, JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version);
@@ -162,6 +202,16 @@ describe('transport', () => {
     assert.deepEqual([err.status, err.code, err.detail], [404, 'not_found', 'no such simulation']);
     assert.match(err.message, /GET \/simulations\/w_x/);
     assert.equal(api.requests.length, 1);
+  });
+
+  test('a refused key names the API it went to and how to point the client elsewhere', async () => {
+    // A key made on dev.computaco.ai is unknown to computaco.ai, and the other way round.
+    api.routes.set('GET /v1/me', error(401, 'unauthenticated', 'Unknown API key.'));
+    const err = await client.me().catch((e) => e);
+    assert.deepEqual([err.status, err.code], [401, 'unauthenticated']);
+    assert.ok(err.detail.startsWith('Unknown API key. '));
+    assert.ok(err.detail.includes(`went to ${api.url}/v1`));
+    assert.match(err.detail, /COMPUTERWORLD_API_BASE/);
   });
 
   test("a non-JSON 403 names Cloudflare's 1010", async () => {
@@ -203,9 +253,17 @@ describe('transport', () => {
     assert.equal(api.requests.filter((r) => r.method === 'POST').length, 1);
   });
 
-  test('503 retries a POST', async () => {
-    api.routes.set('POST /v1/simulations', [error(503, 'unavailable'), reply(201, SIMULATION)]);
+  test('503 with Retry-After retries a POST', async () => {
+    api.routes.set('POST /v1/simulations', [error(503, 'model_unavailable', '', { 'retry-after': '0' }), reply(201, SIMULATION)]);
     assert.equal((await client.createSimulation('agent-desktop')).id, 'w_abc');
+  });
+
+  test('503 without Retry-After is a failure of ours: a POST is not sent twice, a GET is', async () => {
+    api.routes.set('POST /v1/simulations', [error(503, 'harness_failed'), reply(201, SIMULATION)]);
+    await assert.rejects(client.createSimulation('agent-desktop'), (e) => e.code === 'harness_failed');
+    assert.equal(api.requests.filter((r) => r.method === 'POST').length, 1);
+    api.routes.set('GET /v1/simulations', [error(503, 'harness_failed'), reply(200, { simulations: [] })]);
+    assert.deepEqual(await client.listSimulations(), []);
   });
 
   test('a connection failure is ConnectionFailed', async () => {
@@ -486,18 +544,25 @@ describe('society and forks', () => {
   test('a place is named on boot, import and fork; history, snapshot frames and agent connections', async () => {
     const { simulation } = await boot();
     const p = '/v1/simulations/w_abc';
-    const place = { id: 'core', kind: 'do', memory_mb: 128, metered: false, modules: [], reason: 'asked for' };
-    const refused = [{ place: 'container', code: 'plan_required', message: 'no container-minutes' }];
+    const place = { id: 'core', kind: 'lightning', metered: false, modules: [], reason: 'asked for' };
+    const refused = [{ place: 'heavy', code: 'plan_required', message: 'no Heavy-minutes' }];
     api.routes.set('POST /v1/simulations', reply(201, { ...SIMULATION, place, refused }));
-    const placed = await client.createSimulation('agent-desktop', { place: ['container', 'do'] });
-    assert.deepEqual(api.last().body, { template: 'agent-desktop', seed: 1, place: ['container', 'do'] });
+    const placed = await client.createSimulation('agent-desktop', { place: ['heavy', 'lightning'] });
+    assert.deepEqual(api.last().body, { template: 'agent-desktop', seed: 1, place: ['heavy', 'lightning'] });
     assert.deepEqual([placed.info.place.id, placed.info.refused[0].code], ['core', 'plan_required']);
     api.routes.set('POST /v1/simulations/import', reply(201, { ...SIMULATION, id: 'w_imp', place }));
-    await client.importSimulation({ v: 1 }, 'copy', { place: 'do' });
-    assert.deepEqual(api.last().body, { snapshot: { v: 1 }, name: 'copy', place: 'do' });
+    await client.importSimulation({ v: 1, snapshot: new Uint8Array([7, 0]) }, 'copy', { place: 'lightning' });
+    assert.deepEqual(api.last().body, { bundle: { v: 1 }, snapshot: new Uint8Array([7, 0]), options: { name: 'copy', place: 'lightning' } });
+    // An export is the same form, read back to the bundle with its snapshot's bytes.
+    const exported = new FormData();
+    exported.append('bundle', new Blob([JSON.stringify({ v: 1, state_hash: 'h' })], { type: 'application/json' }));
+    exported.append('snapshot', new Blob([new Uint8Array([7, 0])], { type: 'application/octet-stream' }));
+    const form = new Response(exported);
+    api.routes.set(`GET ${p}/export`, reply(200, new Uint8Array(await form.arrayBuffer()), { 'content-type': form.headers.get('content-type') }));
+    assert.deepEqual(await simulation.exportSnapshot(), { v: 1, state_hash: 'h', snapshot: new Uint8Array([7, 0]) });
     api.routes.set(`POST ${p}/fork`, reply(201, { ...SIMULATION, id: 'w_fork', forked_from: 'w_abc', place }));
-    await simulation.fork({ snapshot: { id: 's_1' }, place: 'do' });
-    assert.deepEqual(api.last().body, { snapshot: 's_1', place: 'do' });
+    await simulation.fork({ snapshot: { id: 's_1' }, place: 'lightning' });
+    assert.deepEqual(api.last().body, { snapshot: 's_1', place: 'lightning' });
 
     const s1 = { id: 's_1', label: 'one', state_hash: 'h', tick: 0, parent: null, author: 'ada', frames: ['workstation'] };
     api.routes.set(`GET ${p}/snapshots`, reply(200, { snapshots: [s1], head: 's_1' }));

@@ -64,11 +64,11 @@ Five words name everything here:
 - An **simulation** is one running world. `create_simulation(template, seed=, name=,
   platform=, society=, idle_ttl=, place=)`, or `definition=` in place of a template;
   `list_simulations`, `get_simulation`, `import_simulation(bundle, name, place=)`. `place`
-  says where it runs: a place's id (`"core"`, `"office"`, `"media"`, `"container"`), `"do"` or
-  `"container"`, or a list tried in order; left out, a Durable Object first. `info["place"]`
+  says where it runs: `"lightning"` or `"heavy"` (or a Lightning place's id: `"core"`,
+  `"office"`, `"media"`), or a list tried in order; left out, Lightning first. `info["place"]`
   answers where it runs and why, `info["refused"]` the places that refused it. On an `Simulation`:
   `rename`, `delete`, `read_file` / `write_file`, `clock` / `state_hash`, `advance("30s")`,
-  `reset`, `inspect`, `definition`, `trajectory`, `service_state` / `patch_service_state`,
+  `reset`, `inspect`, `definition`, `trajectory`, `service_state` / `patch_service_state`, `asks` / `answer_asks`,
   `topology`, `add_computer` / `remove_computer`, `snapshot` / `snapshots` / `restore` (the agents and their
   conversations become the snapshot's) / `snapshot_agents(snapshot)` / `snapshot_messages(snapshot, agent)` / `drop_snapshot` (returns `{snapshots, head}`), `snapshot_frame(snapshot, machine)`
   (the PNG of a machine's screen at a snapshot), `history` (the family's snapshots, forks and
@@ -105,8 +105,8 @@ What else is here:
   `find_elements(scene, ...)` and `center(element)` work on a scene you already hold.
 - **Agents without the owner's key.** `Agent.connect(token, simulation_id, agent_id)` makes a handle
   from an actor token alone; it can step, observe, read the scene and render, nothing else.
-- **Retries.** A 429 or 503 is retried for any method; a 500, 502, 504 or a lost
-  connection only for GET, PUT and DELETE (a POST that may have changed the simulation is not
+- **Retries.** A 429, or a 503 with `Retry-After`, is retried for any method; a 500, 502, 504, a 503
+  without `Retry-After` (a failure on our side) or a lost connection only for GET, PUT and DELETE (a POST that may have changed the simulation is not
   sent twice). The wait is `Retry-After` when the API sends one, otherwise an exponential
   backoff from 0.5 s (jittered, at most 30 s); four retries by default (`max_retries=`),
   and a `Retry-After` over 120 s is raised at once instead of waited.

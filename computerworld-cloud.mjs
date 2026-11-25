@@ -13,10 +13,11 @@ export const USER_AGENT = `computerworld-cloud-js/${VERSION}`;
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 800;
 
-// 429 and 503 mean the request was not processed, so any method may be sent again.
-// 500, 502 and 504 may come after the simulation changed, so only idempotent methods retry.
-const ALWAYS_RETRY = new Set([429, 503]);
-const IDEMPOTENT_RETRY = new Set([500, 502, 504]);
+// 429, and a 503 with Retry-After, mean the request was not processed, so any method may be sent again.
+// 500, 502, 504 and a 503 without Retry-After (a failure of ours, which the API answers 503 because the edge
+// replaces a 502's body) may come after the simulation changed, so only idempotent methods retry.
+const ALWAYS_RETRY = new Set([429]);
+const IDEMPOTENT_RETRY = new Set([500, 502, 503, 504]);
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']);
 
 // A browser sends its own User-Agent and a cross-origin fetch may not set one (it is not a
@@ -102,7 +103,7 @@ class Transport {
     return new Transport(this.baseUrl, token, this.opts);
   }
 
-  async request(method, path, { json, params, headers, ok = [], auth = true } = {}) {
+  async request(method, path, { json, form, params, headers, ok = [], auth = true } = {}) {
     method = method.toUpperCase();
     let url = this.baseUrl + path;
     if (params) {
@@ -121,6 +122,8 @@ class Transport {
     if (json !== undefined) {
       body = JSON.stringify(json);
       h['content-type'] = 'application/json';
+    } else if (form !== undefined) {
+      body = form; // a FormData sets its own type and boundary
     }
 
     for (let attempt = 0; ; attempt++) {
@@ -135,8 +138,8 @@ class Transport {
         throw new ConnectionFailed(`${method} ${url}: ${err?.message ?? err}`);
       }
       if (resp.status < 400 || ok.includes(resp.status)) return resp;
-      const err = await toError(resp, method, path);
-      const retryable = ALWAYS_RETRY.has(resp.status) || (IDEMPOTENT_RETRY.has(resp.status) && IDEMPOTENT.has(method));
+      const err = await toError(resp, method, path, this.baseUrl);
+      const retryable = ALWAYS_RETRY.has(resp.status) || (resp.status === 503 && err.retryAfter != null) || (IDEMPOTENT_RETRY.has(resp.status) && IDEMPOTENT.has(method));
       if (!retryable || attempt >= this.maxRetries || (err.retryAfter != null && err.retryAfter > this.maxRetryAfter)) {
         throw err;
       }
@@ -156,7 +159,13 @@ class Transport {
   }
 }
 
-async function toError(resp, method, path) {
+/** What a refused key most often means: it was made on another deployment, whose accounts are its own
+ * (dev.computaco.ai's keys are unknown to computaco.ai, and the other way round). */
+const keyHint = (baseUrl) =>
+  `This request went to ${baseUrl}. A key works only with the API of the site where it was made: ` +
+  'set COMPUTERWORLD_API_BASE (or baseUrl) to that site\'s /v1, for example https://dev.computaco.ai/v1.';
+
+async function toError(resp, method, path, baseUrl = '') {
   const retryAfter = parseRetryAfter(resp.headers.get('retry-after'));
   const text = await resp.text().catch(() => '');
   let code = `http_${resp.status}`;
@@ -172,6 +181,7 @@ async function toError(resp, method, path) {
     message = text.trim().slice(0, 300) || resp.statusText || '';
     if (text.includes('error code: 1010')) message += " (Cloudflare refused the client's User-Agent)";
   }
+  if (resp.status === 401 && baseUrl) message = (message ? `${message} ` : '') + keyHint(baseUrl);
   return new ApiError(resp.status, code, message, { method, path, retryAfter, body: parsed ?? text });
 }
 
@@ -262,6 +272,25 @@ const agentRef = (a) =>
       ? Object.fromEntries(Object.entries(a).map(([role, x]) => [role, agentRef(x)]))
       : a;
 
+/**
+ * An export as the API carries it: a form of the bundle's JSON (`bundle`) and the snapshot's
+ * bytes (`snapshot`); as code holds it, the bundle with `snapshot` a Uint8Array.
+ */
+async function bundleOf(resp) {
+  const form = await resp.formData();
+  const bundle = JSON.parse(await form.get('bundle').text());
+  bundle.snapshot = new Uint8Array(await form.get('snapshot').arrayBuffer());
+  return bundle;
+}
+function bundleForm(bundle, extra = {}) {
+  const { snapshot, ...rest } = bundle;
+  const form = new FormData();
+  form.append('bundle', new Blob([JSON.stringify(rest)], { type: 'application/json' }), 'bundle.json');
+  form.append('snapshot', new Blob([snapshot], { type: 'application/octet-stream' }), 'snapshot');
+  for (const [k, v] of Object.entries(extra)) form.append(k, new Blob([JSON.stringify(v)], { type: 'application/json' }), `${k}.json`);
+  return form;
+}
+
 const ndjson = (text) =>
   text
     .split('\n')
@@ -297,7 +326,7 @@ export class Client {
 
   /**
    * Make an account, then an API key with its session (every scope unless `scopes` names some:
-   * simulations, templates, models, account). Resolves to `{ client, user, key }`: a client
+   * simulations, browser, templates, models, account). Resolves to `{ client, user, key }`: a client
    * holding the key, the account, and the key as made (its `key` is the secret, shown once).
    * Server side only: a browser does not let a script read the session cookie.
    */
@@ -401,10 +430,9 @@ export class Client {
    * Boot a simulation: `createSimulation('agent-desktop', { seed })`, or
    * `createSimulation(null, { definition })`. `society` (`{ id | spec, rule, journal, rounds }`,
    * or a template's society id) adds simulated agents. `idleTtl` (seconds): the service deletes
-   * the simulation after that long with no request to it. `place`: where it runs, a place's id
-   * (`'core'`, `'office'`, `'media'`, `'container'`), `'do'` or `'container'`, or a list of
-   * those tried in order; left out, a Durable Object first, and a container only for a stated
-   * reason. `info.place` says where it runs and why, `info.refused` the places that refused it.
+   * the simulation after that long with no request to it. `place`: where it runs, `'lightning'`
+   * or `'heavy'` (or a Lightning place's id: `'core'`, `'office'`, `'media'`), or a list of those
+   * tried in order; left out, Lightning first, and Heavy only for a stated reason. `info.place` says where it runs and why, `info.refused` the places that refused it.
    */
   async createSimulation(template, { definition, seed = 1, name, platform, society, idleTtl, place } = {}) {
     if ((template == null) === (definition == null)) throw new Error('pass exactly one of template, definition');
@@ -419,7 +447,17 @@ export class Client {
   }
   /** Boot a new simulation from what `simulation.exportSnapshot()` returned; `place` is as for `createSimulation`. */
   async importSimulation(bundle, name, { place, idleTtl } = {}) {
-    return new Simulation(this, await this._post('/simulations/import', dropUndefined({ snapshot: bundle, name, place, idle_ttl: idleTtl })));
+    const form = bundleForm(bundle, { options: dropUndefined({ name, place, idle_ttl: idleTtl }) });
+    const resp = await this._t.request('POST', '/simulations/import', { form });
+    return new Simulation(this, await resp.json());
+  }
+
+  /**
+   * The browser: a web browser on a simulated Linux machine whose whole screen is the browser.
+   * One-shot reads (`client.browser.screenshot(url)`) and sessions (`client.browser.createSession()`).
+   */
+  get browser() {
+    return (this._browser ??= new Browser(this));
   }
 
   // agent models (OpenAI's paths)
@@ -503,6 +541,14 @@ export class Simulation {
   patchServiceState(serviceId, patch) {
     return this._c._t.json('PATCH', `${this._p}/services/${q(serviceId)}/state`, patch);
   }
+  /** The questions the world's sites have for a model, and when something is next due. */
+  asks() {
+    return this._c._get(`${this._p}/asks`);
+  }
+  /** Answer them: {services?, advance?: "30m", ask_model?: false}. */
+  answerAsks(options = {}) {
+    return this._c._t.json('POST', `${this._p}/asks`, options);
+  }
 
   // topology
   topology() {
@@ -562,8 +608,9 @@ export class Simulation {
   history() {
     return this._c._get(`${this._p}/history`);
   }
-  exportSnapshot() {
-    return this._c._get(`${this._p}/export`);
+  /** The simulation as a bundle `client.importSimulation` boots: its definition, seed and agents, and `snapshot`, the engine's bytes. */
+  async exportSnapshot() {
+    return bundleOf(await this._c._t.request('GET', `${this._p}/export`));
   }
 
   // forks
@@ -572,7 +619,7 @@ export class Simulation {
    * society comes over with its runner state, and `societyOps` (an arm's rule ops) are applied
    * to it. External agents come over under new tokens: `fork.getAgent(id)`. `snapshot` forks from
    * a kept snapshot. `place` is as for a new simulation; left out, the fork runs where its
-   * parent does (`'do'` moves a container's copy to a Durable Object).
+   * parent does (`'lightning'` moves a Heavy simulation's copy to Lightning).
    */
   async fork({ name, snapshot, societyOps, place, idleTtl } = {}) {
     const body = dropUndefined({ name, snapshot: snapshot == null ? undefined : idOf(snapshot), society_ops: societyOps, place, idle_ttl: idleTtl });
@@ -635,6 +682,41 @@ export class Simulation {
     const options = dropUndefined({ width, height });
     if (Object.keys(options).length) body.options = options;
     return this._c._post(`${this._p}/perform`, body);
+  }
+
+  // ingress (a real client's way in: an HTTPS GET of one published service, or a stock ssh)
+  /**
+   * Publish one of this world's services to real HTTP clients: `publish(agent, 'html.example', 8090)`. Each GET of
+   * `url + path` with `header` is that agent's `http.v1 / request` from its machine to the service. Resolves to the
+   * grant: `url`, `credential` (shown once), `header`, `expires_at`. `ttl` is in seconds (60 to 86400).
+   */
+  publish(agent, host, port, { machine, ttl } = {}) {
+    return this._c._post(`${this._p}/publications`, dropUndefined({ agent: agentRef(agent), host, port, machine, ttl_s: ttl }));
+  }
+  /** This simulation's publications (never their credentials). */
+  async publications() {
+    return (await this._c._get(`${this._p}/publications`)).grants;
+  }
+  /** Revoke a publication or an SSH grant; the next request with it fails. */
+  revokeGrant(grant, { kind } = {}) {
+    const handle = typeof grant === 'string' ? grant : grant.handle;
+    const route = (kind ?? grant?.kind) === 'ssh' ? 'ssh' : 'publications';
+    return this._c._delete(`${this._p}/${route}/${q(handle)}`);
+  }
+  /**
+   * Let a stock OpenSSH client act as `agent`: each `ssh … 'command'` is its `terminal.v1 / execute`. `publicKey` is
+   * the client's OpenSSH public key line; `forward: { host, port }` also allows `ssh -L` to that one published
+   * service (`exec: false` allows only that). Resolves to the grant with `login`, `websocket_url`, `credential` (shown
+   * once), `known_hosts` (the host key to pin), `host_key_alias` and a copyable `ssh_command`, which runs through
+   * the `cw-ssh-proxy` helper this package installs. Write the grant to a file with mode 0600 and name it in
+   * CW_SSH_GRANT.
+   */
+  ssh(agent, publicKey, { machine, exec, forward, ttl } = {}) {
+    return this._c._post(`${this._p}/ssh`, dropUndefined({ agent: agentRef(agent), public_key: publicKey, machine, exec, forward, ttl_s: ttl }));
+  }
+  /** This simulation's SSH grants (never their credentials). */
+  async sshGrants() {
+    return (await this._c._get(`${this._p}/ssh`)).grants;
   }
 
   // procedures
@@ -839,5 +921,106 @@ export class Society {
   /** Outcomes per round for this simulation and each fork, their divergence and state hashes. */
   summary() {
     return this._c._get(`${this._p}/summary`);
+  }
+}
+
+// ------------------------------------------------------------------------------- the browser
+
+/** `{ viewport, waitMs, fullPage }` → the API's body beside `url`. */
+const browserBody = (url, { viewport, waitMs, fullPage } = {}) => dropUndefined({ url, viewport, wait_ms: waitMs, full_page: fullPage });
+
+/** A screenshot's answer: `{ bytes, width, height, stateHash, clipped, browserMsUsed }`. */
+async function shotOf(resp) {
+  const int = (name) => (resp.headers.get(name) == null ? null : Number(resp.headers.get(name)));
+  return {
+    bytes: new Uint8Array(await resp.arrayBuffer()),
+    width: int('x-width'),
+    height: int('x-height'),
+    stateHash: resp.headers.get('x-state-hash'),
+    clipped: resp.headers.get('x-full-page-clipped') === 'true',
+    browserMsUsed: int('x-browser-ms-used'),
+  };
+}
+
+/** The browser API (`client.browser`): one-shot calls, each in a throwaway session, and sessions. */
+export class Browser {
+  constructor(client) {
+    this._c = client;
+  }
+  /** The page at `url` drawn as a PNG: `{ bytes, width, height, … }`. `fullPage` draws the whole page. */
+  async screenshot(url, opts = {}) {
+    return shotOf(await this._c._t.request('POST', '/browser/screenshot', { json: browserBody(url, opts), headers: { accept: 'image/png' } }));
+  }
+  /** `{ url, status, title, html }`: the page's markup after its script ran. */
+  content(url, opts = {}) {
+    return this._c._post('/browser/content', browserBody(url, opts));
+  }
+  /** `{ url, title, markdown }`. */
+  markdown(url, opts = {}) {
+    return this._c._post('/browser/markdown', browserBody(url, opts));
+  }
+  /** `{ url, links: [{ href, text }] }`. */
+  links(url, opts = {}) {
+    return this._c._post('/browser/links', browserBody(url, opts));
+  }
+  /** `{ url, status, title, html, screenshot }`, the screenshot a base64 PNG. */
+  snapshot(url, opts = {}) {
+    return this._c._post('/browser/snapshot', browserBody(url, opts));
+  }
+  /** Open a session, at `url` when given; `idleTtlS` (seconds, default 300) deletes it after that long unused. */
+  async createSession({ url, viewport, idleTtlS, waitMs } = {}) {
+    return new BrowserSession(this._c, await this._c._post('/browser/sessions', dropUndefined({ url, viewport, idle_ttl_s: idleTtlS, wait_ms: waitMs })));
+  }
+  async getSession(id) {
+    return new BrowserSession(this._c, await this._c._get(`/browser/sessions/${q(id)}`));
+  }
+  async listSessions() {
+    return (await this._c._get('/browser/sessions')).sessions.map((s) => new BrowserSession(this._c, s));
+  }
+}
+
+/** A browser session: a simulation whose machine's whole screen is the browser, driven by actions. */
+export class BrowserSession {
+  constructor(client, info) {
+    this._c = client;
+    this.id = info.id;
+    this.info = info;
+    this._p = `/browser/sessions/${q(info.id)}`;
+  }
+  get url() {
+    return this.info.url;
+  }
+  get viewport() {
+    return this.info.viewport;
+  }
+  async refresh() {
+    return (this.info = await this._c._get(this._p));
+  }
+  /** Up to 64 `browser.v1`, `keyboard.v1` or `pointer.v1` actions `{ family, op, payload }`: `{ outcomes, state_hash, tick }`. */
+  act(actions) {
+    return this._c._post(`${this._p}/actions`, { actions });
+  }
+  /** Send the browser to `url`; an unsuccessful navigation throws ActionFailed. */
+  async navigate(url) {
+    const action = { family: 'browser.v1', op: 'navigate', payload: { url } };
+    const r = await this.act([action]);
+    if (!r.outcomes[0]?.success) throw new ActionFailed(action, r.outcomes[0]);
+    return r;
+  }
+  /** The screen as a PNG: `{ bytes, width, height, … }`; `fullPage` draws the whole page. */
+  async screenshot({ fullPage } = {}) {
+    return shotOf(await this._c._t.request('GET', `${this._p}/screenshot`, { params: { full_page: fullPage || undefined }, headers: { accept: 'image/png' } }));
+  }
+  content() {
+    return this._c._get(`${this._p}/content`);
+  }
+  markdown() {
+    return this._c._get(`${this._p}/markdown`);
+  }
+  links() {
+    return this._c._get(`${this._p}/links`);
+  }
+  delete() {
+    return this._c._delete(this._p);
   }
 }

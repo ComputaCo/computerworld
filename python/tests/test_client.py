@@ -94,6 +94,43 @@ class OneComputerTests(Base):
         self.assertEqual(self.api.requests[-1]["body"]["model"], "deepseek-flash")
 
 
+class BrowserTests(Base):
+    PNG = b"\x89PNG\r\n\x1a\n"
+    SESSION = {"id": "w_b1", "url": "https://example.com/", "title": "Example", "status": 200, "viewport": {"width": 800, "height": 600}, "idle_ttl_s": 300}
+
+    def test_one_shot_calls_send_the_page_and_its_options(self) -> None:
+        self.api.routes[("POST", "/v1/browser/screenshot")] = reply(200, self.PNG, {"Content-Type": "image/png", "x-width": "640", "x-height": "400", "x-browser-ms-used": "91"})
+        shot = self.client.browser.screenshot("https://example.com/", viewport={"width": 640, "height": 400}, wait_ms=500, full_page=True)
+        self.assertEqual(self.api.requests[-1]["body"], {"url": "https://example.com/", "viewport": {"width": 640, "height": 400}, "wait_ms": 500, "full_page": True})
+        self.assertEqual(bytes(shot), self.PNG)
+        self.assertEqual((shot.width, shot.height, shot.clipped, shot.browser_ms_used), (640, 400, False, 91))
+        for what in ("content", "markdown", "links", "snapshot"):
+            self.api.routes[("POST", f"/v1/browser/{what}")] = reply(200, {"url": "https://example.com/", "what": what})
+            self.assertEqual(getattr(self.client.browser, what)("https://example.com/")["what"], what)
+            self.assertEqual(self.api.requests[-1]["body"], {"url": "https://example.com/"})
+
+    def test_a_session_is_made_driven_read_drawn_and_deleted(self) -> None:
+        self.api.routes[("POST", "/v1/browser/sessions")] = reply(201, self.SESSION)
+        s = self.client.browser.create_session("https://example.com/", viewport={"width": 800, "height": 600}, idle_ttl_s=120)
+        self.assertEqual(self.api.requests[-1]["body"], {"url": "https://example.com/", "viewport": {"width": 800, "height": 600}, "idle_ttl_s": 120})
+        self.assertEqual((s.id, s.url, s.viewport), ("w_b1", "https://example.com/", {"width": 800, "height": 600}))
+        self.api.routes[("POST", "/v1/browser/sessions/w_b1/actions")] = reply(200, {"id": "w_b1", "outcomes": [{"success": False, "error": {"reason": "unreachable"}}], "state_hash": "h", "tick": 0})
+        with self.assertRaises(ActionFailed):
+            s.navigate("https://nowhere.example/")
+        self.assertEqual(self.api.requests[-1]["body"], {"actions": [{"family": "browser.v1", "op": "navigate", "payload": {"url": "https://nowhere.example/"}}]})
+        self.api.routes[("GET", "/v1/browser/sessions/w_b1/screenshot")] = reply(200, self.PNG, {"Content-Type": "image/png", "x-width": "800", "x-height": "3200", "x-full-page-clipped": "true"})
+        self.assertTrue(s.screenshot(full_page=True).clipped)
+        self.assertEqual(self.api.requests[-1]["query"], {"full_page": "1"})
+        self.api.routes[("GET", "/v1/browser/sessions/w_b1/content")] = reply(200, {"url": "https://example.com/", "status": 200, "title": "Example", "html": "<html></html>"})
+        self.assertEqual(s.content()["html"], "<html></html>")
+        self.api.routes[("GET", "/v1/browser/sessions")] = reply(200, {"sessions": [self.SESSION]})
+        self.assertEqual([x.id for x in self.client.browser.list_sessions()], ["w_b1"])
+        self.api.routes[("DELETE", "/v1/browser/sessions/w_b1")] = reply(204)
+        with s:
+            pass
+        self.assertEqual(self.api.requests[-1]["method"], "DELETE")
+
+
 class ThreadTests(Base):
     def test_hosted_agent_prompt_stream_stop_and_an_actor_writing_its_thread(self) -> None:
         self.api.routes[("POST", "/v1/simulations")] = reply(201, SIMULATION)
@@ -167,6 +204,18 @@ class TransportTests(Base):
         self.assertIn("GET /simulations/w_x", str(e))
         self.assertEqual(len(self.api.requests), 1)
 
+    def test_refused_key_names_the_api_it_went_to_and_how_to_change_it(self) -> None:
+        # A key made on dev.computaco.ai is unknown to computaco.ai: the 401 says which API was
+        # asked and how to point the client at the site that made the key.
+        self.api.routes[("GET", "/v1/me")] = error(401, "unauthenticated", "Unknown API key.")
+        with self.assertRaises(ApiError) as cm:
+            self.client.me()
+        e = cm.exception
+        self.assertEqual((e.status, e.code), (401, "unauthenticated"))
+        self.assertTrue(e.message.startswith("Unknown API key. "))
+        self.assertIn(f"went to {self.api.url}/v1", e.message)
+        self.assertIn("COMPUTERWORLD_API_BASE", e.message)
+
     def test_non_json_error_names_cloudflare_1010(self) -> None:
         self.api.routes[("GET", "/v1/me")] = reply(403, b"error code: 1010", {"Content-Type": "text/plain"})
         with self.assertRaises(ApiError) as cm:
@@ -208,9 +257,17 @@ class TransportTests(Base):
         self.assertEqual(self.api.requests[-1]["method"], "POST")
         self.assertEqual(sum(r["method"] == "POST" for r in self.api.requests), 1)
 
-    def test_503_retries_post(self) -> None:
-        self.api.routes[("POST", "/v1/simulations")] = [error(503, "unavailable"), reply(201, SIMULATION)]
+    def test_503_with_retry_after_retries_post(self) -> None:
+        self.api.routes[("POST", "/v1/simulations")] = [error(503, "model_unavailable", "", {"Retry-After": "0"}), reply(201, SIMULATION)]
         self.assertEqual(self.client.create_simulation("agent-desktop").id, "w_abc")
+
+    def test_503_without_retry_after_does_not_resend_post(self) -> None:
+        self.api.routes[("POST", "/v1/simulations")] = [error(503, "harness_failed"), reply(201, SIMULATION)]
+        with self.assertRaises(ApiError):
+            self.client.create_simulation("agent-desktop")
+        self.assertEqual(sum(r["method"] == "POST" for r in self.api.requests), 1)
+        self.api.routes[("GET", "/v1/simulations")] = [error(503, "harness_failed"), reply(200, {"simulations": []})]
+        self.assertEqual(self.client.list_simulations(), [])
 
     def test_connection_failure(self) -> None:
         t = Transport("http://127.0.0.1:9", "k", max_retries=1, sleep=lambda s: None, timeout=2)
@@ -492,18 +549,27 @@ class SocietyAndForkTests(Base):
     def test_places_history_snapshot_frames_and_agent_connections(self) -> None:
         simulation, _ = self.boot()
         p = "/v1/simulations/w_abc"
-        place = {"id": "core", "kind": "do", "memory_mb": 128, "metered": False, "modules": [], "reason": "asked for"}
-        refused = [{"place": "container", "code": "plan_required", "message": "no container-minutes"}]
+        place = {"id": "core", "kind": "lightning", "metered": False, "modules": [], "reason": "asked for"}
+        refused = [{"place": "heavy", "code": "plan_required", "message": "no Heavy-minutes"}]
         self.api.routes[("POST", "/v1/simulations")] = reply(201, dict(SIMULATION, place=place, refused=refused))
-        placed = self.client.create_simulation("agent-desktop", place=("container", "do"))
-        self.assertEqual(self.api.requests[-1]["body"], {"template": "agent-desktop", "seed": 1, "place": ["container", "do"]})
+        placed = self.client.create_simulation("agent-desktop", place=("heavy", "lightning"))
+        self.assertEqual(self.api.requests[-1]["body"], {"template": "agent-desktop", "seed": 1, "place": ["heavy", "lightning"]})
         self.assertEqual((placed.info["place"]["id"], placed.info["refused"][0]["code"]), ("core", "plan_required"))
         self.api.routes[("POST", "/v1/simulations/import")] = reply(201, dict(SIMULATION, id="w_imp", place=place))
-        self.client.import_simulation({"v": 1}, "copy", place="do")
-        self.assertEqual(self.api.requests[-1]["body"], {"snapshot": {"v": 1}, "name": "copy", "place": "do"})
+        self.client.import_simulation({"v": 1, "snapshot": b"\x07\x00"}, "copy", place="lightning")
+        self.assertEqual(
+            self.api.requests[-1]["body"],
+            {"bundle": {"v": 1}, "snapshot": b"\x07\x00", "options": {"name": "copy", "place": "lightning"}},
+        )
+        # An export is the same form, read back to the bundle with its snapshot's bytes.
+        from computerworld_cloud.client import _bundle_form
+
+        form, kind = _bundle_form({"v": 1, "state_hash": "h", "snapshot": b"\x07\x00"})
+        self.api.routes[("GET", p + "/export")] = reply(200, form, {"Content-Type": kind})
+        self.assertEqual(simulation.export_snapshot(), {"v": 1, "state_hash": "h", "snapshot": b"\x07\x00"})
         self.api.routes[("POST", p + "/fork")] = reply(201, dict(SIMULATION, id="w_fork", forked_from="w_abc", place=place))
-        simulation.fork(snapshot={"id": "s_1"}, place="do")
-        self.assertEqual(self.api.requests[-1]["body"], {"snapshot": "s_1", "place": "do"})
+        simulation.fork(snapshot={"id": "s_1"}, place="lightning")
+        self.assertEqual(self.api.requests[-1]["body"], {"snapshot": "s_1", "place": "lightning"})
 
         s1 = {"id": "s_1", "label": "one", "state_hash": "h", "tick": 0, "parent": None, "author": "ada", "frames": ["workstation"]}
         self.api.routes[("GET", p + "/snapshots")] = reply(200, {"snapshots": [s1], "head": "s_1"})
