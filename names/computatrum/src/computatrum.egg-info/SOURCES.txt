@@ -1,8 +1,0 @@
-LICENSE
-README.md
-pyproject.toml
-src/computatrum/__init__.py
-src/computatrum.egg-info/PKG-INFO
-src/computatrum.egg-info/SOURCES.txt
-src/computatrum.egg-info/dependency_links.txt
-src/computatrum.egg-info/top_level.txt

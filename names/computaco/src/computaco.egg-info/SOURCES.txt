@@ -1,8 +1,0 @@
-LICENSE
-README.md
-pyproject.toml
-src/computaco/__init__.py
-src/computaco.egg-info/PKG-INFO
-src/computaco.egg-info/SOURCES.txt
-src/computaco.egg-info/dependency_links.txt
-src/computaco.egg-info/top_level.txt
