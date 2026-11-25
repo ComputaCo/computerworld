@@ -3,8 +3,8 @@
 #   clients  computerworld-cloud on PyPI (python/) and on npm (this folder), at the version their manifests say
 #   names    the placeholders under names/ on PyPI: computaco, computatrum, computaco-core (0.0.1 each)
 #
-# PyPI: each project's trusted publisher (pending until the first upload) names ComputaCo/computerworld, this file
-# (publish.yml), environment empty. npm: a new name is made once by a person, logged in; after that the package's
+# PyPI: each project's trusted publisher (pending until the first upload) names ComputaCo/computerworld and this file
+# (publish.yml); computerworld-cloud's environment is empty, a placeholder's is pypi-<name>. npm: a new name is made once by a person, logged in; after that the package's
 # trusted publisher names this repository and this file. The placeholders' npm and crates.io versions were made by
 # hand (names/README.md); their later, real versions publish from the repository that holds their code.
 #
@@ -60,7 +60,12 @@ jobs:
           npm publish --access public --provenance
   names:
     if: inputs.what == 'names'
+    strategy:
+      matrix:
+        name: [computaco, computatrum, computaco-core]
     runs-on: ubuntu-24.04
+    # PyPI keeps one pending publisher per repository, workflow and environment, so each name has its environment.
+    environment: pypi-${{ matrix.name }}
     permissions:
       id-token: write
       contents: read
@@ -70,7 +75,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install build
-      - run: for n in computaco computatrum computaco-core; do python -m build --outdir dist names/$n; done
+      - run: python -m build --outdir dist names/${{ matrix.name }}
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
