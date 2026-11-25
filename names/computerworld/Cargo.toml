@@ -1,0 +1,15 @@
+[package]
+name = "computerworld"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "ComputerWorld, from ComputaCo. This version holds the name; the real crate comes later."
+homepage = "https://computaco.ai"
+repository = "https://github.com/ComputaCo/computerworld"
+readme = "README.md"
+include = ["src/lib.rs", "README.md", "LICENSE"]
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

@@ -9,24 +9,20 @@ Get an API key at <https://computaco.ai/console/create-account.html>.
 
 ## Install
 
-It is not on npm. Install it from this repository, or take the one file,
-`computerworld-cloud.mjs`, in whichever way suits:
-
-```js
-// From a URL (browsers, Deno; pin a tag or commit instead of main for anything lasting):
-import { Client } from 'https://cdn.jsdelivr.net/gh/ComputaCo/computerworld@main/computerworld-cloud.mjs';
+```sh
+npm install computerworld-cloud                    # then: import { Client } from 'computerworld-cloud'
 ```
 
-```sh
-# Into a Node project, straight from GitHub:
-npm install github:ComputaCo/computerworld        # then: import { Client } from 'computerworld-cloud'
-# Or copy computerworld-cloud.mjs (and computerworld-cloud.d.mts for types) into your project.
+Or take the one file, `computerworld-cloud.mjs`, from a URL (browsers, Deno; pin a tag or commit for anything lasting):
+
+```js
+import { Client } from 'https://cdn.jsdelivr.net/gh/ComputaCo/computerworld@main/computerworld-cloud.mjs';
 ```
 
 ## Python
 
 ```sh
-pip install "computerworld-cloud @ git+https://github.com/ComputaCo/computerworld.git#subdirectory=python"
+pip install computerworld-cloud
 ```
 
 See [python/README.md](python/README.md).

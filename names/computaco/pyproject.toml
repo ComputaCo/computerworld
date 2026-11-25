@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "computaco"
+version = "0.0.1"
+description = "ComputaCo, from ComputaCo. This version holds the name; the real package comes later."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+classifiers = ["Development Status :: 1 - Planning", "Programming Language :: Python :: 3"]
+
+[project.urls]
+Homepage = "https://computaco.ai"
+Source = "https://github.com/ComputaCo/computerworld/tree/main/names/computaco"
+
+[tool.setuptools.packages.find]
+where = ["src"]

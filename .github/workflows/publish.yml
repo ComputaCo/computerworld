@@ -1,0 +1,77 @@
+# Publish ComputaCo's packages from this repository by TRUSTED PUBLISHING (OIDC): no token is stored anywhere.
+#
+#   clients  computerworld-cloud on PyPI (python/) and on npm (this folder), at the version their manifests say
+#   names    the placeholders under names/ on PyPI: computaco, computatrum, computaco-core (0.0.1 each)
+#
+# PyPI: each project's trusted publisher (pending until the first upload) names ComputaCo/computerworld, this file
+# (publish.yml), environment empty. npm: a new name is made once by a person, logged in; after that the package's
+# trusted publisher names this repository and this file. The placeholders' npm and crates.io versions were made by
+# hand (names/README.md); their later, real versions publish from the repository that holds their code.
+#
+# Manual only: GitHub Actions costs money, so nothing runs it on a push. Each job skips a version the registry has.
+name: publish
+on:
+  workflow_dispatch:
+    inputs:
+      what:
+        description: clients or names
+        required: true
+        type: choice
+        options: [clients, names]
+permissions:
+  contents: read
+jobs:
+  python:
+    if: inputs.what == 'clients'
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build pytest
+      - run: cd python && PYTHONPATH=src python -m pytest -q tests/test_client.py
+      - run: cd python && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist
+          skip-existing: true
+  npm:
+    if: inputs.what == 'clients'
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm install -g npm@latest
+      - run: npm test
+      - name: publish unless npm has this version
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "computerworld-cloud@$v" version >/dev/null 2>&1; then echo "computerworld-cloud@$v is on npm"; exit 0; fi
+          npm publish --access public --provenance
+  names:
+    if: inputs.what == 'names'
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build
+      - run: for n in computaco computatrum computaco-core; do python -m build --outdir dist names/$n; done
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          skip-existing: true

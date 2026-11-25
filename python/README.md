@@ -9,10 +9,9 @@ Get an API key at <https://computaco.ai/console/create-account.html>.
 
 ## Install
 
-It is not on PyPI. Install it from this repository:
-
 ```sh
-pip install "computerworld-cloud @ git+https://github.com/ComputaCo/computerworld.git#subdirectory=python"
+pip install computerworld-cloud
+# from this repository:  pip install "computerworld-cloud @ git+https://github.com/ComputaCo/computerworld.git#subdirectory=python"
 # a tag or commit:  ...computerworld.git@<ref>#subdirectory=python
 # from a checkout of this repository:  pip install ./python
 ```

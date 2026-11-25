@@ -1,0 +1,22 @@
+{
+  "name": "computaco-core",
+  "version": "0.0.1",
+  "description": "ComputaCo core, from ComputaCo. This version holds the name; the real package comes later.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "homepage": "https://computaco.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ComputaCo/computerworld.git",
+    "directory": "names/computaco-core"
+  }
+}
