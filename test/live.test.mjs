@@ -33,7 +33,8 @@ test('agent-desktop journey', { skip: !process.env.COMPUTERWORLD_API_KEY && 'COM
     const launcher = await timed('scene (elements)', () => agent.find({ interaction: 'shell:launch:editor' }));
     const clicked = await timed('step (click)', () => agent.click({ element: launcher }));
     assert.ok(clicked.outcomes[0].effect.changed.includes('window.opened'));
-    await agent.click({ element: await agent.find({ role: 'textbox', label: 'Document text' }) });
+    // agent-desktop is Ubuntu: GNOME Text Editor's text view (GTK 4) has no accessible name, so it is found by its role.
+    await agent.click({ element: await agent.find({ role: 'textbox' }) });
     await timed('step (type)', () => agent.typeText('Hello from computerworld-cloud-js'));
 
     const frame = await timed('render 1280x800 png', () => agent.render());

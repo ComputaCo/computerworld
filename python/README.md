@@ -26,7 +26,7 @@ client = Client()   # COMPUTERWORLD_API_KEY and COMPUTERWORLD_API_BASE, or Clien
 with client.create_environment("agent-desktop", seed=1) as sim:  # deleted at the end of the block
     agent = sim.agent()                                          # an external agent; holds the actor token
     agent.click(interaction="shell:launch:editor")               # find in the scene, click its centre
-    agent.click(role="textbox", label="Document text")
+    agent.click(role="textbox")                                  # the editor's text (GTK 4 gives it no name)
     agent.type_text("Hello")
     agent.render().save("screen.png")                            # PNG bytes, with .etag .state_hash .tick
 

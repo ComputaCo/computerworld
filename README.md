@@ -45,7 +45,7 @@ const environment = await client.createEnvironment('agent-desktop', { seed: 1 })
 try {
   const agent = await environment.agent();                    // an external agent; holds the actor token
   await agent.click({ interaction: 'shell:launch:editor' });  // find in the scene, click its centre
-  await agent.click({ role: 'textbox', label: 'Document text' });
+  await agent.click({ role: 'textbox' });                    // the editor's text (GTK 4 gives it no name)
   await agent.typeText('Hello');
   const frame = await agent.render();                         // { bytes: Uint8Array (PNG), etag, stateHash, tick, ... }
 

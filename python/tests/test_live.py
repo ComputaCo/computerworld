@@ -53,7 +53,9 @@ class LiveSmoke(unittest.TestCase):
             with timed("step (click)"):
                 clicked = agent.click(element=launcher)
             self.assertIn("window.opened", clicked["outcomes"][0]["effect"]["changed"])
-            text = agent.find(role="textbox", label="Document text")
+            # agent-desktop is Ubuntu: GNOME Text Editor's text view (GTK 4) has no
+            # accessible name, so it is found by its role.
+            text = agent.find(role="textbox")
             agent.click(element=text)
             with timed("step (type)"):
                 agent.type_text("Hello from computerworld-cloud-python")
