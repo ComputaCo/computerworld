@@ -7,7 +7,7 @@
 //
 // Types are in computerworld-cloud.d.mts beside it. The contract is cloud/openapi.yaml.
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 export const DEFAULT_BASE_URL = 'https://computaco.ai/v1';
 export const USER_AGENT = `computerworld-cloud-js/${VERSION}`;
 const DEFAULT_WIDTH = 1280;
@@ -15,7 +15,7 @@ const DEFAULT_HEIGHT = 800;
 
 // 429, and a 503 with Retry-After, mean the request was not processed, so any method may be sent again.
 // 500, 502, 504 and a 503 without Retry-After (a failure of ours, which the API answers 503 because the edge
-// replaces a 502's body) may come after the simulation changed, so only idempotent methods retry.
+// replaces a 502's body) may come after the environment changed, so only idempotent methods retry.
 const ALWAYS_RETRY = new Set([429]);
 const IDEMPOTENT_RETRY = new Set([500, 502, 503, 504]);
 const IDEMPOTENT = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']);
@@ -326,7 +326,7 @@ export class Client {
 
   /**
    * Make an account, then an API key with its session (every scope unless `scopes` names some:
-   * simulations, browser, templates, models, account). Resolves to `{ client, user, key }`: a client
+   * environments, browser, templates, models, account). Resolves to `{ client, user, key }`: a client
    * holding the key, the account, and the key as made (its `key` is the secret, shown once).
    * Server side only: a browser does not let a script read the session cookie.
    */
@@ -422,34 +422,34 @@ export class Client {
     return this._post('/validate', dropUndefined({ definition, society }));
   }
 
-  // simulations
-  async listSimulations() {
-    return (await this._get('/simulations')).simulations;
+  // environments
+  async listEnvironments() {
+    return (await this._get('/environments')).environments;
   }
   /**
-   * Boot a simulation: `createSimulation('agent-desktop', { seed })`, or
-   * `createSimulation(null, { definition })`. `society` (`{ id | spec, rule, journal, rounds }`,
+   * Boot an environment: `createEnvironment('agent-desktop', { seed })`, or
+   * `createEnvironment(null, { definition })`. `society` (`{ id | spec, rule, journal, rounds }`,
    * or a template's society id) adds simulated agents. `idleTtl` (seconds): the service deletes
-   * the simulation after that long with no request to it. `place`: where it runs, `'lightning'`
+   * the environment after that long with no request to it. `place`: where it runs, `'lightning'`
    * or `'heavy'` (or a Lightning place's id: `'core'`, `'office'`, `'media'`), or a list of those
    * tried in order; left out, Lightning first, and Heavy only for a stated reason. `info.place` says where it runs and why, `info.refused` the places that refused it.
    */
-  async createSimulation(template, { definition, seed = 1, name, platform, society, idleTtl, place } = {}) {
+  async createEnvironment(template, { definition, seed = 1, name, platform, society, idleTtl, place } = {}) {
     if ((template == null) === (definition == null)) throw new Error('pass exactly one of template, definition');
     const soc = typeof society === 'string' ? { id: society } : society;
-    return new Simulation(
+    return new Environment(
       this,
-      await this._post('/simulations', dropUndefined({ template, definition, seed, name, platform, society: soc, idle_ttl: idleTtl, place })),
+      await this._post('/environments', dropUndefined({ template, definition, seed, name, platform, society: soc, idle_ttl: idleTtl, place })),
     );
   }
-  async getSimulation(id) {
-    return new Simulation(this, await this._get(`/simulations/${q(id)}`));
+  async getEnvironment(id) {
+    return new Environment(this, await this._get(`/environments/${q(id)}`));
   }
-  /** Boot a new simulation from what `simulation.exportSnapshot()` returned; `place` is as for `createSimulation`. */
-  async importSimulation(bundle, name, { place, idleTtl } = {}) {
+  /** Boot a new environment from what `environment.exportSnapshot()` returned; `place` is as for `createEnvironment`. */
+  async importEnvironment(bundle, name, { place, idleTtl } = {}) {
     const form = bundleForm(bundle, { options: dropUndefined({ name, place, idle_ttl: idleTtl }) });
-    const resp = await this._t.request('POST', '/simulations/import', { form });
-    return new Simulation(this, await resp.json());
+    const resp = await this._t.request('POST', '/environments/import', { form });
+    return new Environment(this, await resp.json());
   }
 
   /**
@@ -470,13 +470,13 @@ export class Client {
   }
 }
 
-/** A running simulation the organization owns: one world with its clock, machines, snapshots, agents and forks. */
-export class Simulation {
+/** A running environment the organization owns: one world with its clock, machines, snapshots, agents and forks. */
+export class Environment {
   constructor(client, info) {
     this._c = client;
     this.info = info;
     this.id = info.id;
-    this._p = `/simulations/${q(this.id)}`;
+    this._p = `/environments/${q(this.id)}`;
     this._agents = new Map();
     for (const grant of Array.isArray(info.agents) ? info.agents : []) {
       if (grant?.token) this._agents.set(grant.id, Agent._fromGrant(client, this.id, grant));
@@ -490,11 +490,11 @@ export class Simulation {
   async rename(name) {
     return (this.info = await this._c._t.json('PATCH', this._p, { name }));
   }
-  /** Delete the simulation, its snapshots and its agents. */
+  /** Delete the environment, its snapshots and its agents. */
   delete() {
     return this._c._delete(this._p);
   }
-  /** `await using sim = await client.createSimulation(...)` deletes it at the end of the block. */
+  /** `await using sim = await client.createEnvironment(...)` deletes it at the end of the block. */
   [Symbol.asyncDispose ?? Symbol.for('Symbol.asyncDispose')]() {
     return this.delete();
   }
@@ -562,7 +562,7 @@ export class Simulation {
   }
 
   // snapshots and history
-  /** Keep a snapshot: `{ id, label, state_hash, tick, parent, author, frames, head, … }`. It is the simulation's head now. */
+  /** Keep a snapshot: `{ id, label, state_hash, tick, parent, author, frames, head, … }`. It is the environment's head now. */
   snapshot(label) {
     return this._c._post(`${this._p}/snapshots`, dropUndefined({ label }));
   }
@@ -602,30 +602,30 @@ export class Simulation {
     return frameOf(resp, 'png');
   }
   /**
-   * The family's history: `{ simulation, simulations }`, the furthest ancestor first, each
-   * with its place, origin, head and snapshots. No simulation is woken to answer.
+   * The family's history: `{ environment, environments }`, the furthest ancestor first, each
+   * with its place, origin, head and snapshots. No environment is woken to answer.
    */
   history() {
     return this._c._get(`${this._p}/history`);
   }
-  /** The simulation as a bundle `client.importSimulation` boots: its definition, seed and agents, and `snapshot`, the engine's bytes. */
+  /** The environment as a bundle `client.importEnvironment` boots: its definition, seed and agents, and `snapshot`, the engine's bytes. */
   async exportSnapshot() {
     return bundleOf(await this._c._t.request('GET', `${this._p}/export`));
   }
 
   // forks
   /**
-   * A new simulation copied from this one as it is now (`forked_from` names this one). A
+   * A new environment copied from this one as it is now (`forked_from` names this one). A
    * society comes over with its runner state, and `societyOps` (an arm's rule ops) are applied
    * to it. External agents come over under new tokens: `fork.getAgent(id)`. `snapshot` forks from
-   * a kept snapshot. `place` is as for a new simulation; left out, the fork runs where its
-   * parent does (`'lightning'` moves a Heavy simulation's copy to Lightning).
+   * a kept snapshot. `place` is as for a new environment; left out, the fork runs where its
+   * parent does (`'lightning'` moves a Heavy environment's copy to Lightning).
    */
   async fork({ name, snapshot, societyOps, place, idleTtl } = {}) {
     const body = dropUndefined({ name, snapshot: snapshot == null ? undefined : idOf(snapshot), society_ops: societyOps, place, idle_ttl: idleTtl });
-    return new Simulation(this._c, await this._c._post(`${this._p}/fork`, body));
+    return new Environment(this._c, await this._c._post(`${this._p}/fork`, body));
   }
-  /** The ids of this simulation's forks. */
+  /** The ids of this environment's forks. */
   async forks() {
     return (await this.refresh()).forks ?? [];
   }
@@ -693,7 +693,7 @@ export class Simulation {
   publish(agent, host, port, { machine, ttl } = {}) {
     return this._c._post(`${this._p}/publications`, dropUndefined({ agent: agentRef(agent), host, port, machine, ttl_s: ttl }));
   }
-  /** This simulation's publications (never their credentials). */
+  /** This environment's publications (never their credentials). */
   async publications() {
     return (await this._c._get(`${this._p}/publications`)).grants;
   }
@@ -714,7 +714,7 @@ export class Simulation {
   ssh(agent, publicKey, { machine, exec, forward, ttl } = {}) {
     return this._c._post(`${this._p}/ssh`, dropUndefined({ agent: agentRef(agent), public_key: publicKey, machine, exec, forward, ttl_s: ttl }));
   }
-  /** This simulation's SSH grants (never their credentials). */
+  /** This environment's SSH grants (never their credentials). */
   async sshGrants() {
     return (await this._c._get(`${this._p}/ssh`)).grants;
   }
@@ -730,7 +730,7 @@ export class Simulation {
   verify(instance) {
     return this._c._post(`${this._p}/procedures/verify`, { instance });
   }
-  /** Instantiate, stage, project and verify. `fork: true` leaves this simulation as it was. */
+  /** Instantiate, stage, project and verify. `fork: true` leaves this environment as it was. */
   run(procedure, { seed = 1, fork = false, includeSteps = false, options, overrides, agent } = {}) {
     return this._c._post(`${this._p}/procedures/run`, {
       ...procedureBody(procedure),
@@ -740,33 +740,33 @@ export class Simulation {
 }
 
 /**
- * An agent of a simulation, with its thread (`messages`, `prompt`, `stream`, `stop`); an
- * external agent is also the actor's door to the simulation. Actor calls use the actor token when
+ * An agent of an environment, with its thread (`messages`, `prompt`, `stream`, `stop`); an
+ * external agent is also the actor's door to the environment. Actor calls use the actor token when
  * the handle has one, so the handle can be given to an agent program without the owner's key.
  * `width`/`height` are the viewport the scene, the render and the pointer helpers use.
  */
 export class Agent {
-  constructor(transport, simulationId, agentId, { token = null, grant = {}, owner = null, width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT } = {}) {
+  constructor(transport, environmentId, agentId, { token = null, grant = {}, owner = null, width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT } = {}) {
     this._t = transport;
-    this.simulationId = simulationId;
+    this.environmentId = environmentId;
     this.id = agentId;
     this.token = token;
     this.grant = grant;
     this._owner = owner;
     this.width = width;
     this.height = height;
-    this._p = `/simulations/${q(simulationId)}/agents/${q(agentId)}`;
+    this._p = `/environments/${q(environmentId)}/agents/${q(agentId)}`;
   }
 
-  static _fromGrant(client, simulationId, grant) {
+  static _fromGrant(client, environmentId, grant) {
     const t = grant.token ? client._t.withToken(grant.token) : client._t;
-    return new Agent(t, simulationId, grant.id, { token: grant.token ?? null, grant, owner: client });
+    return new Agent(t, environmentId, grant.id, { token: grant.token ?? null, grant, owner: client });
   }
 
   /** An agent's handle from an actor token alone. */
-  static connect(token, simulationId, agentId, { baseUrl, ...opts } = {}) {
+  static connect(token, environmentId, agentId, { baseUrl, ...opts } = {}) {
     const t = new Transport(baseUrl ?? env('COMPUTERWORLD_API_BASE') ?? DEFAULT_BASE_URL, token, opts);
-    return new Agent(t, simulationId, agentId, { token });
+    return new Agent(t, environmentId, agentId, { token });
   }
 
   get config() {
@@ -890,21 +890,21 @@ export class Agent {
   /** One grounded gesture through this agent (an owner call: needs the API key). */
   perform(gesture) {
     if (!this._owner?._t.token) throw new ComputerWorldError('perform is an owner call; this handle has only an actor token');
-    return new Simulation(this._owner, { id: this.simulationId }).perform(this.id, gesture, { width: this.width, height: this.height });
+    return new Environment(this._owner, { id: this.environmentId }).perform(this.id, gesture, { width: this.width, height: this.height });
   }
 }
 
-/** A simulation's society: its simulated agents, their rules and rounds. */
+/** An environment's society: its simulated agents, their rules and rounds. */
 export class Society {
-  constructor(client, simulationPath) {
+  constructor(client, environmentPath) {
     this._c = client;
-    this._p = `${simulationPath}/society`;
+    this._p = `${environmentPath}/society`;
   }
-  /** `{ spec_id, people, round, rounds, metrics }`; a 404 when the simulation has no society. */
+  /** `{ spec_id, people, round, rounds, metrics }`; a 404 when the environment has no society. */
   info() {
     return this._c._get(this._p);
   }
-  /** Run 1 to 100 rounds in this simulation only (a fork runs its own); `pending` lists the model decisions the journal lacks. */
+  /** Run 1 to 100 rounds in this environment only (a fork runs its own); `pending` lists the model decisions the journal lacks. */
   runRounds(count = 1, { askModel } = {}) {
     return this._c._post(`${this._p}/rounds`, dropUndefined({ count, ask_model: askModel || undefined }));
   }
@@ -918,7 +918,7 @@ export class Society {
   async trace({ since } = {}) {
     return ndjson(await (await this._c._t.request('GET', `${this._p}/trace`, { params: { since } })).text());
   }
-  /** Outcomes per round for this simulation and each fork, their divergence and state hashes. */
+  /** Outcomes per round for this environment and each fork, their divergence and state hashes. */
   summary() {
     return this._c._get(`${this._p}/summary`);
   }
@@ -979,7 +979,7 @@ export class Browser {
   }
 }
 
-/** A browser session: a simulation whose machine's whole screen is the browser, driven by actions. */
+/** A browser session: an environment whose machine's whole screen is the browser, driven by actions. */
 export class BrowserSession {
   constructor(client, info) {
     this._c = client;

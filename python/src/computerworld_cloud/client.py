@@ -1,4 +1,4 @@
-"""The client and the handles it returns: ``Simulation``, ``Agent``, ``Society``."""
+"""The client and the handles it returns: ``Environment``, ``Agent``, ``Society``."""
 
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ class Client:
         **kw: Any,
     ) -> "tuple[Client, JSON, JSON]":
         """Make an account, then an API key with its session (every scope unless ``scopes``
-        names some: simulations, browser, templates, models, account). Return a client holding the
+        names some: environments, browser, templates, models, account). Return a client holding the
         key, the account, and the key as made (its ``key`` is the secret, shown once)."""
         base = base_url or os.environ.get("COMPUTERWORLD_API_BASE") or DEFAULT_BASE_URL
         t = Transport(base, None, **kw)
@@ -226,7 +226,7 @@ class Client:
         return self._get("/keys")["keys"]
 
     def create_key(self, name: Optional[str] = None, scopes: Optional[Sequence[str]] = None) -> JSON:
-        """A new API key with ``scopes`` (default every one: simulations, templates, models,
+        """A new API key with ``scopes`` (default every one: environments, templates, models,
         account); its ``key`` field is the secret, shown once."""
         return self._post(
             "/keys", _drop_none({"name": name, "scopes": None if scopes is None else list(scopes)})
@@ -295,12 +295,12 @@ class Client:
         ``society``, also the number of people it compiles to."""
         return self._post("/validate", _drop_none({"definition": definition, "society": society}))
 
-    # -- simulations ------------------------------------------------------------------------
+    # -- environments ------------------------------------------------------------------------
 
-    def list_simulations(self) -> List[JSON]:
-        return self._get("/simulations")["simulations"]
+    def list_environments(self) -> List[JSON]:
+        return self._get("/environments")["environments"]
 
-    def create_simulation(
+    def create_environment(
         self,
         template: Optional[str] = None,
         *,
@@ -311,12 +311,12 @@ class Client:
         society: Union[str, JSON, None] = None,
         idle_ttl: Optional[int] = None,
         place: Union[str, Sequence[str], None] = None,
-    ) -> "Simulation":
-        """Boot a simulation from a template id or a definition.
+    ) -> "Environment":
+        """Boot an environment from a template id or a definition.
 
         ``society`` (``{"id" | "spec", "rule", "journal", "rounds"}``, or a template's society
         id) adds simulated agents; ``"journal": "builtin"`` replays the recorded decisions.
-        ``idle_ttl`` (seconds): the service deletes the simulation after that long with no
+        ``idle_ttl`` (seconds): the service deletes the environment after that long with no
         request to it. ``place``: where it runs, ``"lightning"`` or ``"heavy"`` (or a Lightning
         place's id: ``"core"``, ``"office"``, ``"media"``), or a list of those tried in order;
         left out, Lightning first, and Heavy only for a stated reason.
@@ -337,24 +337,24 @@ class Client:
                 "place": _place(place),
             }
         )
-        return Simulation(self, self._post("/simulations", body))
+        return Environment(self, self._post("/environments", body))
 
-    def get_simulation(self, simulation_id: str) -> "Simulation":
-        return Simulation(self, self._get(f"/simulations/{_q(simulation_id)}"))
+    def get_environment(self, environment_id: str) -> "Environment":
+        return Environment(self, self._get(f"/environments/{_q(environment_id)}"))
 
-    def import_simulation(
+    def import_environment(
         self,
         bundle: JSON,
         name: Optional[str] = None,
         *,
         place: Union[str, Sequence[str], None] = None,
         idle_ttl: Optional[int] = None,
-    ) -> "Simulation":
-        """Boot a new simulation from what :meth:`Simulation.export_snapshot` returned;
-        ``place`` is as for :meth:`create_simulation`."""
+    ) -> "Environment":
+        """Boot a new environment from what :meth:`Environment.export_snapshot` returned;
+        ``place`` is as for :meth:`create_environment`."""
         options = _drop_none({"name": name, "place": _place(place), "idle_ttl": idle_ttl})
         form = _bundle_form(bundle, options=options)
-        return Simulation(self, self._t.request("POST", "/simulations/import", raw_body=form).json())
+        return Environment(self, self._t.request("POST", "/environments/import", raw_body=form).json())
 
     # -- agent models (OpenAI's paths) ---------------------------------------------------------
 
@@ -376,8 +376,8 @@ class Client:
         return Browser(self)
 
 
-class Simulation:
-    """A running simulation the organization owns: one world with its clock, machines,
+class Environment:
+    """A running environment the organization owns: one world with its clock, machines,
     snapshots, agents and forks. Use as a context manager to delete it on exit.
     """
 
@@ -385,7 +385,7 @@ class Simulation:
         self._c = client
         self.info = info
         self.id: str = info["id"]
-        self._p = f"/simulations/{_q(self.id)}"
+        self._p = f"/environments/{_q(self.id)}"
         self._agents: Dict[str, Agent] = {}
         for grant in info.get("agents") or []:
             if isinstance(grant, dict) and grant.get("token"):
@@ -394,9 +394,9 @@ class Simulation:
         self.society = Society(client, self._p)
 
     def __repr__(self) -> str:
-        return f"Simulation(id={self.id!r}, source={self.info.get('source')!r})"
+        return f"Environment(id={self.id!r}, source={self.info.get('source')!r})"
 
-    def __enter__(self) -> "Simulation":
+    def __enter__(self) -> "Environment":
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -411,7 +411,7 @@ class Simulation:
         return self.info
 
     def delete(self) -> None:
-        """Delete the simulation, its snapshots and its agents."""
+        """Delete the environment, its snapshots and its agents."""
         self._c._delete(self._p)
 
     def read_file(self, path: str, *, machine: Optional[str] = None) -> JSON:
@@ -468,7 +468,7 @@ class Simulation:
 
     def answer_asks(self, services: Optional[List[str]] = None, advance: Optional[str] = None,
                     ask_model: bool = True) -> JSON:
-        """Answer them from the simulation's journal, asking the platform's model on a miss;
+        """Answer them from the environment's journal, asking the platform's model on a miss;
         `advance` ("30m") also moves the clock to each due time up to then."""
         body: Dict[str, Any] = {"ask_model": ask_model}
         if services is not None:
@@ -501,7 +501,7 @@ class Simulation:
 
     def snapshot(self, label: Optional[str] = None) -> JSON:
         """Keep a snapshot; returns ``{id, label, state_hash, tick, bytes, parent, author,
-        frames, head, ...}``. It is the simulation's head now."""
+        frames, head, ...}``. It is the environment's head now."""
         return self._c._post(self._p + "/snapshots", _drop_none({"label": label}))
 
     def snapshots(self) -> List[JSON]:
@@ -538,12 +538,12 @@ class Simulation:
         return Frame(resp.body, resp.headers, "png")
 
     def history(self) -> JSON:
-        """The family's history: ``{simulation, simulations}``, the furthest ancestor first,
-        each with its place, origin, head and snapshots. No simulation is woken to answer."""
+        """The family's history: ``{environment, environments}``, the furthest ancestor first,
+        each with its place, origin, head and snapshots. No environment is woken to answer."""
         return self._c._get(self._p + "/history")
 
     def export_snapshot(self) -> JSON:
-        """A portable bundle, which :meth:`Client.import_simulation` boots: the definition,
+        """A portable bundle, which :meth:`Client.import_environment` boots: the definition,
         seed and agents, and ``snapshot``, the engine's bytes."""
         resp = self._c._t.request("GET", self._p + "/export")
         return _read_bundle(resp.headers.get("content-type", ""), resp.body)
@@ -558,13 +558,13 @@ class Simulation:
         society_ops: Optional[Sequence[JSON]] = None,
         place: Union[str, Sequence[str], None] = None,
         idle_ttl: Optional[int] = None,
-    ) -> "Simulation":
-        """A new simulation copied from this one as it is now (``forked_from`` names this one).
+    ) -> "Environment":
+        """A new environment copied from this one as it is now (``forked_from`` names this one).
 
         A society comes over with its runner state and ``society_ops`` (an arm's rule ops)
         applied to it. External agents come over under new tokens: ``fork.get_agent(agent_id)``.
-        ``snapshot`` forks from a kept snapshot. ``place`` is as for a new simulation; left
-        out, the fork runs where its parent does (``"lightning"`` moves a Heavy simulation's copy
+        ``snapshot`` forks from a kept snapshot. ``place`` is as for a new environment; left
+        out, the fork runs where its parent does (``"lightning"`` moves a Heavy environment's copy
         to Lightning).
         """
         body = _drop_none(
@@ -576,10 +576,10 @@ class Simulation:
                 "idle_ttl": idle_ttl,
             }
         )
-        return Simulation(self._c, self._c._post(self._p + "/fork", body))
+        return Environment(self._c, self._c._post(self._p + "/fork", body))
 
     def forks(self) -> List[str]:
-        """The ids of this simulation's forks."""
+        """The ids of this environment's forks."""
         return self.refresh().get("forks") or []
 
     # -- ingress (a real client's way in) ------------------------------------------------------
@@ -594,7 +594,7 @@ class Simulation:
         return self._c._post(self._p + "/publications", _drop_none({"agent": _id(agent), "host": host, "port": port, "machine": machine, "ttl_s": ttl}))
 
     def publications(self) -> List[JSON]:
-        """This simulation's publications (never their credentials)."""
+        """This environment's publications (never their credentials)."""
         return self._c._get(self._p + "/publications")["grants"]
 
     def ssh(
@@ -619,7 +619,7 @@ class Simulation:
         return self._c._post(self._p + "/ssh", body)
 
     def ssh_grants(self) -> List[JSON]:
-        """This simulation's SSH grants (never their credentials)."""
+        """This environment's SSH grants (never their credentials)."""
         return self._c._get(self._p + "/ssh")["grants"]
 
     def revoke_grant(self, grant: Union[str, Mapping[str, Any]], *, kind: Optional[str] = None) -> None:
@@ -724,7 +724,7 @@ class Simulation:
         agent: Any = None,
     ) -> JSON:
         """Instantiate, stage, project and verify in one call. ``fork=True`` runs it in a
-        throwaway copy and leaves this simulation as it was."""
+        throwaway copy and leaves this environment as it was."""
         body = _procedure_body(procedure)
         body.update(
             _drop_none(
@@ -750,8 +750,8 @@ def _agent_ref(agent: Any) -> Any:
 
 
 class Agent:
-    """An agent of a simulation, with its thread (``messages``, ``prompt``, ``stream``,
-    ``stop``); an external agent is also the actor's door to the simulation.
+    """An agent of an environment, with its thread (``messages``, ``prompt``, ``stream``,
+    ``stop``); an external agent is also the actor's door to the environment.
 
     Actor calls (``step``, ``observe``, ``scene``, ``render``) use the actor token when the
     handle has one, so a handle can be given to an agent program without the owner's key.
@@ -761,7 +761,7 @@ class Agent:
     def __init__(
         self,
         transport: Transport,
-        simulation_id: str,
+        environment_id: str,
         agent_id: str,
         *,
         token: Optional[str] = None,
@@ -771,26 +771,26 @@ class Agent:
         height: int = DEFAULT_HEIGHT,
     ) -> None:
         self._t = transport
-        self.simulation_id = simulation_id
+        self.environment_id = environment_id
         self.id = agent_id
         self.token = token
         self.grant = grant or {}
         self._owner = owner
         self.width = width
         self.height = height
-        self._p = f"/simulations/{_q(simulation_id)}/agents/{_q(agent_id)}"
+        self._p = f"/environments/{_q(environment_id)}/agents/{_q(agent_id)}"
 
     @classmethod
-    def _from_grant(cls, client: Client, simulation_id: str, grant: JSON) -> "Agent":
+    def _from_grant(cls, client: Client, environment_id: str, grant: JSON) -> "Agent":
         token = grant.get("token")
         transport = client._t.with_token(token) if token else client._t
-        return cls(transport, simulation_id, grant["id"], token=token, grant=grant, owner=client)
+        return cls(transport, environment_id, grant["id"], token=token, grant=grant, owner=client)
 
     @classmethod
     def connect(
         cls,
         token: str,
-        simulation_id: str,
+        environment_id: str,
         agent_id: str,
         *,
         base_url: Optional[str] = None,
@@ -798,10 +798,10 @@ class Agent:
     ) -> "Agent":
         """An agent's handle from an actor token alone."""
         base = base_url or os.environ.get("COMPUTERWORLD_API_BASE") or DEFAULT_BASE_URL
-        return cls(Transport(base, token, **kw), simulation_id, agent_id, token=token)
+        return cls(Transport(base, token, **kw), environment_id, agent_id, token=token)
 
     def __repr__(self) -> str:
-        return f"Agent(simulation_id={self.simulation_id!r}, id={self.id!r})"
+        return f"Agent(environment_id={self.environment_id!r}, id={self.id!r})"
 
     def close(self) -> None:
         """Close this thread's kept-alive connection (the handle stays usable)."""
@@ -987,7 +987,7 @@ class Agent:
         """One grounded gesture through this agent (an owner call: needs the API key)."""
         if self._owner is None or not self._owner._t.token:
             raise ComputerWorldError("perform is an owner call; this handle has only an actor token")
-        return Simulation(self._owner, {"id": self.simulation_id}).perform(
+        return Environment(self._owner, {"id": self.environment_id}).perform(
             self.id, gesture, width=self.width, height=self.height
         )
 
@@ -1002,21 +1002,21 @@ class ActionFailed(ComputerWorldError):
 
 
 class Society:
-    """A simulation's society: its simulated agents, their rules and rounds."""
+    """An environment's society: its simulated agents, their rules and rounds."""
 
-    def __init__(self, client: Client, simulation_path: str) -> None:
+    def __init__(self, client: Client, environment_path: str) -> None:
         self._c = client
-        self._p = simulation_path + "/society"
+        self._p = environment_path + "/society"
 
     def __repr__(self) -> str:
         return f"Society({self._p!r})"
 
     def info(self) -> JSON:
-        """``{spec_id, people, round, rounds, metrics}``; ``NotFoundError`` when the simulation has none."""
+        """``{spec_id, people, round, rounds, metrics}``; ``NotFoundError`` when the environment has none."""
         return self._c._get(self._p)
 
     def run_rounds(self, count: int = 1, *, ask_model: bool = False) -> JSON:
-        """Run 1 to 100 rounds in this simulation only (a fork runs its own); ``pending``
+        """Run 1 to 100 rounds in this environment only (a fork runs its own); ``pending``
         lists the model decisions the journal lacks."""
         return self._c._post(self._p + "/rounds", _drop_none({"count": count, "ask_model": ask_model or None}))
 
@@ -1031,7 +1031,7 @@ class Society:
         return _ndjson(self._c._t.request("GET", self._p + "/trace", params={"since": since}).body)
 
     def summary(self) -> JSON:
-        """Outcomes per round for this simulation and each fork, their divergence and state hashes."""
+        """Outcomes per round for this environment and each fork, their divergence and state hashes."""
         return self._c._get(self._p + "/summary")
 
 
@@ -1096,7 +1096,7 @@ class Browser:
 
 
 class BrowserSession:
-    """A browser session: a simulation whose machine's whole screen is the browser. Use it as a
+    """A browser session: an environment whose machine's whole screen is the browser. Use it as a
     context manager to delete it on the way out."""
 
     def __init__(self, client: Client, info: JSON) -> None:

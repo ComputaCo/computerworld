@@ -16,7 +16,7 @@ const fail = (message, code = 255) => {
   process.exit(code);
 };
 const file = process.argv[2] || process.env.CW_SSH_GRANT;
-if (!file) fail('name the grant file: CW_SSH_GRANT=<file> (the API\'s answer to POST /v1/simulations/{id}/ssh, mode 0600)');
+if (!file) fail('name the grant file: CW_SSH_GRANT=<file> (the API\'s answer to POST /v1/environments/{id}/ssh, mode 0600)');
 let grant;
 try {
   const mode = statSync(file).mode & 0o777;

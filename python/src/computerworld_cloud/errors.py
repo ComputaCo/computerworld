@@ -45,7 +45,7 @@ class AuthenticationError(ApiError):
 
 
 class PermissionDeniedError(ApiError):
-    """403: the credential may not do this (an actor token outside its simulation)."""
+    """403: the credential may not do this (an actor token outside its environment)."""
 
 
 class NotFoundError(ApiError):

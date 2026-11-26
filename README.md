@@ -41,37 +41,37 @@ import { Client } from 'computerworld-cloud';
 
 const client = new Client(); // COMPUTERWORLD_API_KEY / COMPUTERWORLD_API_BASE, or new Client('cw_live_…', { baseUrl })
 
-const simulation = await client.createSimulation('agent-desktop', { seed: 1 });
+const environment = await client.createEnvironment('agent-desktop', { seed: 1 });
 try {
-  const agent = await simulation.agent();                    // an external agent; holds the actor token
+  const agent = await environment.agent();                    // an external agent; holds the actor token
   await agent.click({ interaction: 'shell:launch:editor' });  // find in the scene, click its centre
   await agent.click({ role: 'textbox', label: 'Document text' });
   await agent.typeText('Hello');
   const frame = await agent.render();                         // { bytes: Uint8Array (PNG), etag, stateHash, tick, ... }
 
-  const fork = await simulation.fork();                      // same state hash, the agents under new tokens
+  const fork = await environment.fork();                      // same state hash, the agents under new tokens
   const run = await fork.run('agent-desktop/legal-engagement', { seed: 1 });
   console.log(run.verification.passed, await fork.stateHash());
   await fork.delete();
 } finally {
-  await simulation.delete();
+  await environment.delete();
 }
 ```
 
 Five words name everything here:
 
-- A **template** is a world definition you start a simulation from: built in, or one of
+- A **template** is a world definition you start an environment from: built in, or one of
   your organization's own. `listTemplates`, `getTemplate`, `createTemplate`,
   `updateTemplate`, `deleteTemplate`, `templateTopology`, `editTemplateTopology`; a
   built-in template's expert procedures (`templateProcedures`, `templateProcedure`,
   `instantiate`) and societies (`templateSocieties`, `templateSociety`); `vocabulary` and
   `validate`.
-- An **simulation** is one running world. `createSimulation(template, { seed, name, platform,
-  society, idleTtl, place })`, or `{ definition }` in place of a template; `listSimulations`,
-  `getSimulation`, `importSimulation(bundle, name, { place })`. `place` says where it runs:
+- An **environment** is one running world. `createEnvironment(template, { seed, name, platform,
+  society, idleTtl, place })`, or `{ definition }` in place of a template; `listEnvironments`,
+  `getEnvironment`, `importEnvironment(bundle, name, { place })`. `place` says where it runs:
   `'lightning'` or `'heavy'` (or a Lightning place's id: `'core'`, `'office'`, `'media'`), or a
   list tried in order; left out, Lightning first. `info.place` answers where it runs
-  and why, `info.refused` the places that refused it. On an `Simulation`: `rename`, `delete`,
+  and why, `info.refused` the places that refused it. On an `Environment`: `rename`, `delete`,
   `readFile` / `writeFile`, `clock` / `stateHash`, `advance('30s')`, `reset`, `inspect`,
   `definition`, `trajectory`, `serviceState` / `patchServiceState`, `asks` / `answerAsks`, `topology`,
   `addComputer` / `removeComputer`, `snapshot` / `snapshots` / `restore` (the agents and their conversations become the snapshot's) /
@@ -79,19 +79,19 @@ Five words name everything here:
   `dropSnapshot` (resolves to `{ snapshots, head }`), `snapshotFrame(snapshot, machine)` (the
   PNG of a machine's screen at a snapshot), `history` (the family's snapshots, forks and
   heads), `exportSnapshot`, and the expert procedures: `stage`, `project`, `verify`, `run`.
-- An **agent** acts in a simulation. `simulation.agent(config)` makes an external one (your
+- An **agent** acts in an environment. `environment.agent(config)` makes an external one (your
   code, Computatrum) and returns an `Agent` holding its actor token, with `step`, `observe`,
-  `scene` and `render` (PNG bytes; `format: 'rgba'` for raw). `simulation.agents()` lists
+  `scene` and `render` (PNG bytes; `format: 'rgba'` for raw). `environment.agents()` lists
   every agent: the external ones and, with a society, its simulated people (`kind:
-  'simulated'`, no token). `simulation.getAgent(id)` and `simulation.revoke(agent)`;
-  `simulation.connectAgent(agent, machine)` and `disconnectAgent(agent, machine)` connect it
+  'simulated'`, no token). `environment.getAgent(id)` and `environment.revoke(agent)`;
+  `environment.connectAgent(agent, machine)` and `disconnectAgent(agent, machine)` connect it
   to a machine and disconnect it (it keeps its id, token and thread);
-  `simulation.perform(agent, gesture)` does one grounded gesture.
-- A **society** is the simulated people of a simulation, chosen when it boots
-  (`createSimulation('company-2026', { society: { id: 'rumor-cascade', journal: 'builtin' } })`).
-  `simulation.society` has `info`, `runRounds(count, { askModel })`, `journal` /
+  `environment.perform(agent, gesture)` does one grounded gesture.
+- A **society** is the simulated people of an environment, chosen when it boots
+  (`createEnvironment('company-2026', { society: { id: 'rumor-cascade', journal: 'builtin' } })`).
+  `environment.society` has `info`, `runRounds(count, { askModel })`, `journal` /
   `addJournal`, `trace({ since })` and `summary`.
-- A **fork** is a simulation copied from another as it is now: `simulation.fork({ name,
+- A **fork** is an environment copied from another as it is now: `environment.fork({ name,
   snapshot, societyOps, place })`; left to itself it runs where its parent does. Its `info.forked_from` names the parent and the parent's `forks()` lists
   them; each fork runs its own society rounds, and `society.summary()` on the parent
   compares the outcomes per round of every fork.
@@ -101,7 +101,7 @@ What else is here:
 - **Accounts.** `me`, `updateMe`, `setEmail` / `verifyEmail`, `usage`, `listKeys` / `createKey(name, { scopes })` /
   `revokeKey`, `Client.signup(username, password, { scopes })` (makes the account, then one
   key with its session; resolves to `{ client, user, key }`), and the agent models on
-  OpenAI's paths (`models`, `chat`). A key's `scopes` are any of `simulations`,
+  OpenAI's paths (`models`, `chat`). A key's `scopes` are any of `environments`,
   `templates`, `models`, `account` and `research`, every one when left out.
 - **Finding elements.** `agent.find({ label, role, interaction, value, index })` resolves to
   the frontmost interactive element matching every field given (a string matches exactly,
@@ -110,10 +110,10 @@ What else is here:
   `press('Ctrl+S')` and `typeText` round it out. These helpers throw `ActionFailed` on an
   unsuccessful outcome (`check: false` to not). `findElements(scene, query)` and
   `center(element)` work on a scene already held.
-- **Agents without the owner's key.** `Agent.connect(token, simulationId, agentId)` makes a handle
+- **Agents without the owner's key.** `Agent.connect(token, environmentId, agentId)` makes a handle
   from an actor token alone: step, observe, scene and render, nothing else.
 - **Retries.** A 429, or a 503 with `Retry-After`, is retried for any method; a 500, 502, 504, a 503
-  without `Retry-After` (a failure on our side) or a network failure only for GET, PUT and DELETE (a POST that may have changed the simulation is not
+  without `Retry-After` (a failure on our side) or a network failure only for GET, PUT and DELETE (a POST that may have changed the environment is not
   sent twice). The wait is `Retry-After` when the API sends one, otherwise an exponential
   backoff from 500 ms (jittered, at most 30 s); four retries by default (`maxRetries`), and
   a `Retry-After` over 120 s is thrown at once instead of waited.
@@ -124,9 +124,9 @@ What else is here:
 - **User-Agent.** In Node (and Bun and Deno) every request sends
   `computerworld-cloud-js/<version>`, with your `userAgent` in front. A browser sends its
   own: a cross-origin `fetch` may not set `User-Agent`, and Cloudflare accepts browsers'.
-- **Cleanup.** `Simulation` implements `Symbol.asyncDispose`, so where `await using` is
-  available, `await using simulation = await client.createSimulation(...)` deletes the
-  simulation at the end of the block.
+- **Cleanup.** `Environment` implements `Symbol.asyncDispose`, so where `await using` is
+  available, `await using environment = await client.createEnvironment(...)` deletes the
+  environment at the end of the block.
 
 ## Test
 
@@ -137,5 +137,5 @@ npm run typecheck                                 # tsc over test/types.check.mt
 ```
 
 The live test boots `agent-desktop`, clicks the editor's launcher, types, renders a PNG,
-forks, runs `legal-engagement` in the fork, deletes both simulations and checks they are gone,
+forks, runs `legal-engagement` in the fork, deletes both environments and checks they are gone,
 printing client-side timings.

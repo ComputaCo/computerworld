@@ -26,7 +26,7 @@ from computerworld_cloud.client import DEFAULT_BASE_URL  # noqa: E402
 from computerworld_cloud._http import Transport, normalize_base_url, parse_retry_after  # noqa: E402
 from mock_server import MockApi, error, reply  # noqa: E402
 
-SIMULATION = {"id": "w_abc", "source": "builtin:agent-desktop", "state_hash": "h0", "tick": 0, "machines": ["workstation"]}
+ENVIRONMENT = {"id": "w_abc", "source": "builtin:agent-desktop", "state_hash": "h0", "tick": 0, "machines": ["workstation"]}
 GRANT = {
     "id": "agent_1",
     "kind": "external",
@@ -46,7 +46,7 @@ SCENE = {
     ],
 }
 STEP_OK = {"outcomes": [{"success": True, "value": None, "error": None}], "state_hash": "h1", "tick": 0}
-AGENT = "/v1/simulations/w_abc/agents/agent_1"
+AGENT = "/v1/environments/w_abc/agents/agent_1"
 
 
 class Base(unittest.TestCase):
@@ -59,31 +59,31 @@ class Base(unittest.TestCase):
         self.addCleanup(self.client.close)
 
     def boot(self):
-        self.api.routes[("POST", "/v1/simulations")] = reply(201, SIMULATION)
-        self.api.routes[("POST", "/v1/simulations/w_abc/agents")] = reply(201, GRANT)
-        simulation = self.client.create_simulation("agent-desktop", seed=1)
-        return simulation, simulation.agent()
+        self.api.routes[("POST", "/v1/environments")] = reply(201, ENVIRONMENT)
+        self.api.routes[("POST", "/v1/environments/w_abc/agents")] = reply(201, GRANT)
+        environment = self.client.create_environment("agent-desktop", seed=1)
+        return environment, environment.agent()
 
 
 class OneComputerTests(Base):
     def test_step_with_frame_files_and_idle_ttl(self) -> None:
-        self.api.routes[("POST", "/v1/simulations")] = reply(201, {**SIMULATION, "idle_ttl": 900})
-        self.api.routes[("POST", "/v1/simulations/w_abc/agents")] = reply(201, GRANT)
-        simulation = self.client.create_simulation("agent-desktop", platform="ubuntu", idle_ttl=900)
+        self.api.routes[("POST", "/v1/environments")] = reply(201, {**ENVIRONMENT, "idle_ttl": 900})
+        self.api.routes[("POST", "/v1/environments/w_abc/agents")] = reply(201, GRANT)
+        environment = self.client.create_environment("agent-desktop", platform="ubuntu", idle_ttl=900)
         self.assertEqual(self.api.requests[-1]["body"], {"template": "agent-desktop", "seed": 1, "platform": "ubuntu", "idle_ttl": 900})
-        agent = simulation.agent()
+        agent = environment.agent()
         frame = {"png": "iVBORw0K", "width": 1280, "height": 800, "state_hash": "h1"}
         self.api.routes[("POST", AGENT + "/step")] = reply(200, {**STEP_OK, "frame": frame})
         r = agent.step({"family": "keyboard.v1", "op": "type", "payload": {"text": "x"}}, render={"if_changed": True})
         self.assertEqual(r["frame"]["png"], "iVBORw0K")
         self.assertEqual(self.api.requests[-1]["body"]["render"], {"width": 1280, "height": 800, "if_changed": True})
-        self.api.routes[("PUT", "/v1/simulations/w_abc/files")] = lambda req: reply(200, {"machine": "workstation", "path": req["query"]["path"], "bytes": 3, "got": req["body"]})
-        self.assertEqual(simulation.write_file("/home/ada/a.txt", "hey", machine="workstation")["got"], {"content": "hey"})
+        self.api.routes[("PUT", "/v1/environments/w_abc/files")] = lambda req: reply(200, {"machine": "workstation", "path": req["query"]["path"], "bytes": 3, "got": req["body"]})
+        self.assertEqual(environment.write_file("/home/ada/a.txt", "hey", machine="workstation")["got"], {"content": "hey"})
         self.assertEqual(self.api.requests[-1]["query"], {"machine": "workstation", "path": "/home/ada/a.txt"})
-        simulation.write_file("/home/ada/b.bin", b"\x00\xff")
+        environment.write_file("/home/ada/b.bin", b"\x00\xff")
         self.assertEqual(self.api.requests[-1]["body"], {"base64": "AP8="})
-        self.api.routes[("GET", "/v1/simulations/w_abc/files")] = reply(200, {"machine": "workstation", "path": "/home/ada/a.txt", "content": "hey", "base64": "aGV5", "bytes": 3})
-        self.assertEqual(simulation.read_file("/home/ada/a.txt")["content"], "hey")
+        self.api.routes[("GET", "/v1/environments/w_abc/files")] = reply(200, {"machine": "workstation", "path": "/home/ada/a.txt", "content": "hey", "base64": "aGV5", "bytes": 3})
+        self.assertEqual(environment.read_file("/home/ada/a.txt")["content"], "hey")
         self.assertEqual(self.api.requests[-1]["query"], {"path": "/home/ada/a.txt"})
 
     def test_agent_models_on_openai_paths(self) -> None:
@@ -133,13 +133,13 @@ class BrowserTests(Base):
 
 class ThreadTests(Base):
     def test_hosted_agent_prompt_stream_stop_and_an_actor_writing_its_thread(self) -> None:
-        self.api.routes[("POST", "/v1/simulations")] = reply(201, SIMULATION)
-        simulation = self.client.create_simulation("agent-desktop")
-        self.api.routes[("POST", "/v1/simulations/w_abc/agents")] = reply(201, {"id": "agent_2", "kind": "hosted", "name": "Typist", "machine": "workstation", "state": "idle"})
-        hosted = simulation.hosted_agent("workstation", name="Typist")
+        self.api.routes[("POST", "/v1/environments")] = reply(201, ENVIRONMENT)
+        environment = self.client.create_environment("agent-desktop")
+        self.api.routes[("POST", "/v1/environments/w_abc/agents")] = reply(201, {"id": "agent_2", "kind": "hosted", "name": "Typist", "machine": "workstation", "state": "idle"})
+        hosted = environment.hosted_agent("workstation", name="Typist")
         self.assertEqual(self.api.requests[-1]["body"], {"kind": "hosted", "machine": "workstation", "name": "Typist"})
         self.assertIsNone(hosted.token)
-        h = "/v1/simulations/w_abc/agents/agent_2"
+        h = "/v1/environments/w_abc/agents/agent_2"
         self.api.routes[("POST", h + "/messages")] = reply(201, {"message": {"seq": 1, "role": "person", "text": "Type hello", "at": 1}, "state": "working"})
         self.assertEqual(hosted.prompt("Type hello")["state"], "working")
         self.assertEqual(self.api.requests[-1]["body"], {"text": "Type hello"})
@@ -154,8 +154,8 @@ class ThreadTests(Base):
         self.api.routes[("POST", h + "/stop")] = reply(200, {"state": "stopped"})
         self.assertEqual(hosted.stop(), {"state": "stopped"})
 
-        self.api.routes[("POST", "/v1/simulations/w_abc/agents")] = reply(201, GRANT)
-        external = simulation.agent()
+        self.api.routes[("POST", "/v1/environments/w_abc/agents")] = reply(201, GRANT)
+        external = environment.agent()
         self.api.routes[("POST", AGENT + "/messages")] = reply(201, {"message": {"seq": 2, "role": "status", "status": "started", "text": "On it", "at": 5}, "state": "working"})
         external.post("status", "On it", status="started")
         self.assertEqual(self.api.requests[-1]["headers"]["authorization"], "Bearer cwa_w_abc_secret")
@@ -164,8 +164,8 @@ class ThreadTests(Base):
         self.assertEqual(self.api.requests[-1]["headers"]["authorization"], "Bearer cw_live_test")
         with self.assertRaises(Exception):
             Agent.connect("cwa_w_abc_secret", "w_abc", "agent_1", base_url=self.api.url).prompt("x")
-        self.api.routes[("GET", "/v1/simulations/w_abc/agents/p1/messages")] = reply(200, {"messages": [{"seq": 1, "role": "status", "status": "started", "text": "Round 0", "at": None}], "state": "idle"})
-        self.assertIsNone(simulation.person("p1").messages()["messages"][0]["at"])
+        self.api.routes[("GET", "/v1/environments/w_abc/agents/p1/messages")] = reply(200, {"messages": [{"seq": 1, "role": "status", "status": "started", "text": "Round 0", "at": None}], "state": "idle"})
+        self.assertIsNone(environment.person("p1").messages()["messages"][0]["at"])
 
 
 class TransportTests(Base):
@@ -196,12 +196,12 @@ class TransportTests(Base):
         )
 
     def test_error_carries_code_message_and_status(self) -> None:
-        self.api.routes[("GET", "/v1/simulations/w_x")] = error(404, "not_found", "no such simulation")
+        self.api.routes[("GET", "/v1/environments/w_x")] = error(404, "not_found", "no such environment")
         with self.assertRaises(NotFoundError) as cm:
-            self.client.get_simulation("w_x")
+            self.client.get_environment("w_x")
         e = cm.exception
-        self.assertEqual((e.status, e.code, e.message), (404, "not_found", "no such simulation"))
-        self.assertIn("GET /simulations/w_x", str(e))
+        self.assertEqual((e.status, e.code, e.message), (404, "not_found", "no such environment"))
+        self.assertIn("GET /environments/w_x", str(e))
         self.assertEqual(len(self.api.requests), 1)
 
     def test_refused_key_names_the_api_it_went_to_and_how_to_change_it(self) -> None:
@@ -234,40 +234,40 @@ class TransportTests(Base):
         self.assertEqual(self.sleeps, [2.0, 1.0])
 
     def test_429_gives_up_after_max_retries(self) -> None:
-        self.api.routes[("GET", "/v1/simulations")] = error(429, "quota_exceeded", "", {"Retry-After": "0"})
+        self.api.routes[("GET", "/v1/environments")] = error(429, "quota_exceeded", "", {"Retry-After": "0"})
         with self.assertRaises(RateLimitError) as cm:
-            self.client.list_simulations()
+            self.client.list_environments()
         self.assertEqual(cm.exception.retry_after, 0.0)
         self.assertEqual(len(self.api.requests), 1 + self.transport.max_retries)
 
     def test_retry_after_too_long_is_not_waited(self) -> None:
-        self.api.routes[("GET", "/v1/simulations")] = error(429, "quota_exceeded", "", {"Retry-After": "86400"})
+        self.api.routes[("GET", "/v1/environments")] = error(429, "quota_exceeded", "", {"Retry-After": "86400"})
         with self.assertRaises(RateLimitError):
-            self.client.list_simulations()
+            self.client.list_environments()
         self.assertEqual(self.sleeps, [])
 
     def test_5xx_backoff_on_get_but_not_post(self) -> None:
-        self.api.routes[("GET", "/v1/simulations")] = [error(502, "bad_gateway"), error(500, "engine_error"), reply(200, {"simulations": []})]
-        self.assertEqual(self.client.list_simulations(), [])
+        self.api.routes[("GET", "/v1/environments")] = [error(502, "bad_gateway"), error(500, "engine_error"), reply(200, {"environments": []})]
+        self.assertEqual(self.client.list_environments(), [])
         self.assertEqual(len(self.sleeps), 2)
         self.assertTrue(0.25 <= self.sleeps[0] <= 0.5 and 0.5 <= self.sleeps[1] <= 1.0, self.sleeps)
-        self.api.routes[("POST", "/v1/simulations")] = error(500, "engine_error", "boom")
+        self.api.routes[("POST", "/v1/environments")] = error(500, "engine_error", "boom")
         with self.assertRaises(ServerError):
-            self.client.create_simulation("agent-desktop")
+            self.client.create_environment("agent-desktop")
         self.assertEqual(self.api.requests[-1]["method"], "POST")
         self.assertEqual(sum(r["method"] == "POST" for r in self.api.requests), 1)
 
     def test_503_with_retry_after_retries_post(self) -> None:
-        self.api.routes[("POST", "/v1/simulations")] = [error(503, "model_unavailable", "", {"Retry-After": "0"}), reply(201, SIMULATION)]
-        self.assertEqual(self.client.create_simulation("agent-desktop").id, "w_abc")
+        self.api.routes[("POST", "/v1/environments")] = [error(503, "model_unavailable", "", {"Retry-After": "0"}), reply(201, ENVIRONMENT)]
+        self.assertEqual(self.client.create_environment("agent-desktop").id, "w_abc")
 
     def test_503_without_retry_after_does_not_resend_post(self) -> None:
-        self.api.routes[("POST", "/v1/simulations")] = [error(503, "harness_failed"), reply(201, SIMULATION)]
+        self.api.routes[("POST", "/v1/environments")] = [error(503, "harness_failed"), reply(201, ENVIRONMENT)]
         with self.assertRaises(ApiError):
-            self.client.create_simulation("agent-desktop")
+            self.client.create_environment("agent-desktop")
         self.assertEqual(sum(r["method"] == "POST" for r in self.api.requests), 1)
-        self.api.routes[("GET", "/v1/simulations")] = [error(503, "harness_failed"), reply(200, {"simulations": []})]
-        self.assertEqual(self.client.list_simulations(), [])
+        self.api.routes[("GET", "/v1/environments")] = [error(503, "harness_failed"), reply(200, {"environments": []})]
+        self.assertEqual(self.client.list_environments(), [])
 
     def test_connection_failure(self) -> None:
         t = Transport("http://127.0.0.1:9", "k", max_retries=1, sleep=lambda s: None, timeout=2)
@@ -279,76 +279,76 @@ class TransportTests(Base):
         self.assertIsNone(parse_retry_after("soon"))
 
 
-class SimulationTests(Base):
-    def test_create_simulation_body_and_handles(self) -> None:
-        simulation, agent = self.boot()
+class EnvironmentTests(Base):
+    def test_create_environment_body_and_handles(self) -> None:
+        environment, agent = self.boot()
         self.assertEqual(self.api.requests[0]["body"], {"template": "agent-desktop", "seed": 1})
-        self.assertEqual(simulation.id, "w_abc")
+        self.assertEqual(environment.id, "w_abc")
         self.assertEqual(agent.token, "cwa_w_abc_secret")
         with self.assertRaises(ValueError):
-            self.client.create_simulation("a", definition={})
+            self.client.create_environment("a", definition={})
         with self.assertRaises(ValueError):
-            self.client.create_simulation()
+            self.client.create_environment()
 
-    def test_a_society_is_booted_with_the_simulation(self) -> None:
-        self.api.routes[("POST", "/v1/simulations")] = reply(201, SIMULATION)
-        self.client.create_simulation("company-2026", society="rumor-cascade")
+    def test_a_society_is_booted_with_the_environment(self) -> None:
+        self.api.routes[("POST", "/v1/environments")] = reply(201, ENVIRONMENT)
+        self.client.create_environment("company-2026", society="rumor-cascade")
         self.assertEqual(self.api.requests[-1]["body"], {"template": "company-2026", "seed": 1, "society": {"id": "rumor-cascade"}})
         society = {"spec": {"people": []}, "journal": "builtin", "rounds": 4}
-        self.client.create_simulation(definition={"computers": []}, society=society)
+        self.client.create_environment(definition={"computers": []}, society=society)
         self.assertEqual(self.api.requests[-1]["body"]["society"], society)
 
     def test_owner_routes(self) -> None:
-        simulation, _ = self.boot()
-        p = "/v1/simulations/w_abc"
+        environment, _ = self.boot()
+        p = "/v1/environments/w_abc"
         self.api.routes[("POST", p + "/advance")] = reply(200, {"state_hash": "h", "tick": 30_000_000})
         self.api.routes[("POST", p + "/snapshots")] = reply(201, {"id": "s_1"})
         self.api.routes[("POST", p + "/snapshots/s_1/restore")] = reply(200, {"state_hash": "h", "tick": 0, "head": "s_1", "elapsed_ms": 3})
         self.api.routes[("GET", p + "/inspect")] = reply(200, {"x": 1})
-        self.api.routes[("PATCH", p)] = lambda req: reply(200, dict(SIMULATION, name=req["body"]["name"]))
+        self.api.routes[("PATCH", p)] = lambda req: reply(200, dict(ENVIRONMENT, name=req["body"]["name"]))
         self.api.routes[("DELETE", p)] = reply(204)
-        simulation.advance("30s")
+        environment.advance("30s")
         self.assertEqual(self.api.requests[-1]["body"], {"duration": "30s"})
-        simulation.advance(ticks=5)
+        environment.advance(ticks=5)
         self.assertEqual(self.api.requests[-1]["body"], {"ticks": 5})
-        snap = simulation.snapshot("before")
-        simulation.restore(snap)
+        snap = environment.snapshot("before")
+        environment.restore(snap)
         self.api.routes[("GET", p + "/snapshots/s_1/agents")] = reply(200, {"agents": [{"id": "agent_1", "kind": "external", "state": "idle"}], "conversations_kept": True})
         self.api.routes[("GET", p + "/snapshots/s_1/agents/agent_1/messages")] = reply(200, {"messages": [{"seq": 1, "role": "person", "text": "then", "at": 1}], "state": "idle"})
-        self.assertTrue(simulation.snapshot_agents(snap)["conversations_kept"])
-        self.assertEqual(simulation.snapshot_messages(snap, "agent_1")["messages"][0]["text"], "then")
+        self.assertTrue(environment.snapshot_agents(snap)["conversations_kept"])
+        self.assertEqual(environment.snapshot_messages(snap, "agent_1")["messages"][0]["text"], "then")
         self.assertEqual(self.api.requests[-1]["query"], {"after": "0"})
-        simulation.inspect("/state/services")
+        environment.inspect("/state/services")
         self.assertEqual(self.api.requests[-1]["query"], {"pointer": "/state/services"})
-        self.assertEqual(simulation.rename("office")["name"], "office")
-        simulation.delete()
+        self.assertEqual(environment.rename("office")["name"], "office")
+        environment.delete()
         self.assertEqual(self.api.requests[-1]["method"], "DELETE")
 
     def test_context_manager_deletes(self) -> None:
-        self.api.routes[("POST", "/v1/simulations")] = reply(201, SIMULATION)
-        self.api.routes[("DELETE", "/v1/simulations/w_abc")] = reply(204)
-        with self.client.create_simulation("agent-desktop"):
+        self.api.routes[("POST", "/v1/environments")] = reply(201, ENVIRONMENT)
+        self.api.routes[("DELETE", "/v1/environments/w_abc")] = reply(204)
+        with self.client.create_environment("agent-desktop"):
             pass
         self.assertEqual(self.api.requests[-1]["method"], "DELETE")
 
     def test_procedure_references(self) -> None:
-        simulation, agent = self.boot()
+        environment, agent = self.boot()
         self.api.routes[("POST", "/v1/templates/agent-desktop/procedures/legal-engagement/instantiate")] = reply(200, {"seed": 2})
-        self.api.routes[("POST", "/v1/simulations/w_abc/procedures/run")] = reply(200, {"verification": {"passed": True}})
-        self.api.routes[("POST", "/v1/simulations/w_abc/procedures/project")] = reply(200, {"completed": True})
+        self.api.routes[("POST", "/v1/environments/w_abc/procedures/run")] = reply(200, {"verification": {"passed": True}})
+        self.api.routes[("POST", "/v1/environments/w_abc/procedures/project")] = reply(200, {"completed": True})
         self.client.instantiate("agent-desktop", "legal-engagement", seed=2)
         self.assertEqual(self.api.requests[-1]["body"], {"seed": 2})
-        simulation.run({"template": "agent-desktop", "id": "legal-engagement"}, seed=3, fork=True, agent=agent)
+        environment.run({"template": "agent-desktop", "id": "legal-engagement"}, seed=3, fork=True, agent=agent)
         self.assertEqual(
             self.api.requests[-1]["body"],
             {"ref": {"template": "agent-desktop", "id": "legal-engagement"}, "seed": 3, "fork": True, "include_steps": False, "agent": "agent_1"},
         )
-        simulation.run("agent-desktop/legal-engagement")
+        environment.run("agent-desktop/legal-engagement")
         self.assertEqual(self.api.requests[-1]["body"]["ref"], {"template": "agent-desktop", "id": "legal-engagement"})
-        simulation.project({"lawyer": agent}, {"seed": 2})
+        environment.project({"lawyer": agent}, {"seed": 2})
         self.assertEqual(self.api.requests[-1]["body"]["agent"], {"lawyer": "agent_1"})
         with self.assertRaises(ValueError):
-            simulation.run("legal-engagement")
+            environment.run("legal-engagement")
 
     def test_update_me_distinguishes_none_from_left_out(self) -> None:
         self.api.routes[("PATCH", "/v1/me")] = reply(200, {"user": {}})
@@ -376,12 +376,12 @@ class SimulationTests(Base):
         self.api.routes[("POST", "/v1/keys")] = make_key
         self.api.routes[("GET", "/v1/me")] = reply(200, {"user": {}})
         made, user, key = Client.signup(
-            "ada", "a long enough password", base_url=self.api.url, key_name="ci", scopes=("simulations", "templates")
+            "ada", "a long enough password", base_url=self.api.url, key_name="ci", scopes=("environments", "templates")
         )
         self.addCleanup(made.close)
         self.assertEqual(user["username"], "ada")
-        self.assertEqual(key["scopes"], ["simulations", "templates"])
-        self.assertEqual(self.api.requests[1]["body"], {"name": "ci", "scopes": ["simulations", "templates"]})
+        self.assertEqual(key["scopes"], ["environments", "templates"])
+        self.assertEqual(self.api.requests[1]["body"], {"name": "ci", "scopes": ["environments", "templates"]})
         self.assertNotIn("authorization", self.api.requests[1]["headers"])
         made.me()
         self.assertEqual(self.api.requests[-1]["headers"]["authorization"], "Bearer cw_live_secret")
@@ -413,24 +413,24 @@ class AgentTests(Base):
         self.assertEqual(self.api.requests[-1]["headers"]["authorization"], "Bearer cwa_w_abc_secret")
 
     def test_list_holds_external_and_simulated_agents(self) -> None:
-        simulation, agent = self.boot()
-        p = "/v1/simulations/w_abc/agents"
+        environment, agent = self.boot()
+        p = "/v1/environments/w_abc/agents"
         listed = [{k: v for k, v in GRANT.items() if k != "token"}, {"id": "p_nina", "kind": "simulated", "name": "Nina", "population": "staff"}]
         self.api.routes[("GET", p)] = reply(200, {"agents": listed})
         self.api.routes[("GET", p + "/agent_2")] = reply(200, {"id": "agent_2", "kind": "external", "token": "cwa_w_abc_two"})
         self.api.routes[("DELETE", p + "/agent_2")] = reply(204)
-        self.assertEqual([a["kind"] for a in simulation.agents()], ["external", "simulated"])
-        self.assertIs(simulation.get_agent("agent_1"), agent)
-        two = simulation.get_agent("agent_2")
+        self.assertEqual([a["kind"] for a in environment.agents()], ["external", "simulated"])
+        self.assertIs(environment.get_agent("agent_1"), agent)
+        two = environment.get_agent("agent_2")
         self.assertEqual(two.token, "cwa_w_abc_two")
-        simulation.revoke(two)
+        environment.revoke(two)
         self.assertEqual(self.api.requests[-1]["path"], p + "/agent_2")
 
 
 class AgentHelperTests(Base):
     def setUp(self) -> None:
         super().setUp()
-        self.simulation, self.agent = self.boot()
+        self.environment, self.agent = self.boot()
         self.api.routes[("GET", AGENT + "/scene")] = reply(200, SCENE)
         self.api.routes[("POST", AGENT + "/step")] = reply(200, STEP_OK)
 
@@ -472,7 +472,7 @@ class AgentHelperTests(Base):
         self.assertIsNone(self.agent.render(if_none_match=frame.etag))
 
     def test_perform_goes_through_the_owner(self) -> None:
-        self.api.routes[("POST", "/v1/simulations/w_abc/perform")] = reply(200, {"steps": []})
+        self.api.routes[("POST", "/v1/environments/w_abc/perform")] = reply(200, {"steps": []})
         self.agent.perform({"do": "click", "target": {"label": "Post"}})
         req = self.api.requests[-1]
         self.assertEqual(req["headers"]["authorization"], "Bearer cw_live_test")
@@ -486,10 +486,10 @@ class TemplateTests(Base):
         self.api.routes[("PUT", "/v1/templates/bp_2")] = reply(200, {"id": "bp_2", "name": "b"})
         self.api.routes[("POST", "/v1/templates/bp_2/topology")] = reply(200, {"nodes": []})
         self.api.routes[("DELETE", "/v1/templates/bp_2")] = reply(204)
-        self.api.routes[("GET", "/v1/simulations/w_abc/definition")] = reply(200, {"computers": []})
+        self.api.routes[("GET", "/v1/environments/w_abc/definition")] = reply(200, {"computers": []})
         self.assertEqual([t["source"] for t in self.client.list_templates()], ["builtin", "own"])
-        simulation, _ = self.boot()
-        self.client.create_template(simulation.definition(), name="a")
+        environment, _ = self.boot()
+        self.client.create_template(environment.definition(), name="a")
         self.assertEqual(self.api.requests[-1]["body"], {"name": "a", "definition": {"computers": []}})
         self.client.update_template("bp_2", name="b")
         self.assertEqual(self.api.requests[-1]["body"], {"name": "b"})
@@ -514,49 +514,49 @@ class TemplateTests(Base):
 
 
 class SocietyAndForkTests(Base):
-    def test_society_routes_live_under_the_simulation(self) -> None:
-        simulation, _ = self.boot()
-        p = "/v1/simulations/w_abc/society"
+    def test_society_routes_live_under_the_environment(self) -> None:
+        environment, _ = self.boot()
+        p = "/v1/environments/w_abc/society"
         self.api.routes[("GET", p)] = reply(200, {"spec_id": "rumor-cascade", "people": 16, "round": 0, "rounds": 8})
         self.api.routes[("POST", p + "/rounds")] = reply(200, {"round": 2})
         self.api.routes[("GET", p + "/journal")] = reply(200, b'{"key":"a","reply":"x"}\n{"key":"b","reply":"y"}\n')
         self.api.routes[("POST", p + "/journal")] = reply(200, {"entries": 1})
         self.api.routes[("GET", p + "/trace")] = reply(200, b'{"type":"boot"}\n')
         self.api.routes[("GET", p + "/summary")] = reply(200, {"arms": []})
-        self.assertEqual(simulation.society.info()["people"], 16)
-        simulation.society.run_rounds(2, ask_model=True)
+        self.assertEqual(environment.society.info()["people"], 16)
+        environment.society.run_rounds(2, ask_model=True)
         self.assertEqual(self.api.requests[-1]["body"], {"count": 2, "ask_model": True})
-        self.assertEqual([e["key"] for e in simulation.society.journal()], ["a", "b"])
-        simulation.society.add_journal([{"key": "c", "reply": "z"}])
+        self.assertEqual([e["key"] for e in environment.society.journal()], ["a", "b"])
+        environment.society.add_journal([{"key": "c", "reply": "z"}])
         self.assertEqual(self.api.requests[-1]["body"], {"entries": [{"key": "c", "reply": "z"}]})
-        self.assertEqual(simulation.society.trace(since=3), [{"type": "boot"}])
+        self.assertEqual(environment.society.trace(since=3), [{"type": "boot"}])
         self.assertEqual(self.api.requests[-1]["query"], {"since": "3"})
-        simulation.society.summary()
+        environment.society.summary()
 
     def test_a_fork_carries_the_agents_under_new_tokens(self) -> None:
-        simulation, _ = self.boot()
-        p = "/v1/simulations/w_abc"
-        self.api.routes[("POST", p + "/fork")] = reply(201, dict(SIMULATION, id="w_fork", forked_from="w_abc", agents=[dict(GRANT, token="cwa_w_fork_new")]))
-        self.api.routes[("GET", p)] = reply(200, dict(SIMULATION, forks=["w_fork"]))
+        environment, _ = self.boot()
+        p = "/v1/environments/w_abc"
+        self.api.routes[("POST", p + "/fork")] = reply(201, dict(ENVIRONMENT, id="w_fork", forked_from="w_abc", agents=[dict(GRANT, token="cwa_w_fork_new")]))
+        self.api.routes[("GET", p)] = reply(200, dict(ENVIRONMENT, forks=["w_fork"]))
         ops = [{"op": "add_rule", "rule": "r"}]
-        fork = simulation.fork(name="arm b", society_ops=ops)
+        fork = environment.fork(name="arm b", society_ops=ops)
         self.assertEqual(self.api.requests[-1]["body"], {"name": "arm b", "society_ops": ops})
         self.assertEqual(fork.info["forked_from"], "w_abc")
         carried = fork.get_agent("agent_1")
-        self.assertEqual((carried.token, carried.simulation_id), ("cwa_w_fork_new", "w_fork"))
-        self.assertEqual(simulation.forks(), ["w_fork"])
+        self.assertEqual((carried.token, carried.environment_id), ("cwa_w_fork_new", "w_fork"))
+        self.assertEqual(environment.forks(), ["w_fork"])
 
     def test_places_history_snapshot_frames_and_agent_connections(self) -> None:
-        simulation, _ = self.boot()
-        p = "/v1/simulations/w_abc"
+        environment, _ = self.boot()
+        p = "/v1/environments/w_abc"
         place = {"id": "core", "kind": "lightning", "metered": False, "modules": [], "reason": "asked for"}
         refused = [{"place": "heavy", "code": "plan_required", "message": "no Heavy-minutes"}]
-        self.api.routes[("POST", "/v1/simulations")] = reply(201, dict(SIMULATION, place=place, refused=refused))
-        placed = self.client.create_simulation("agent-desktop", place=("heavy", "lightning"))
+        self.api.routes[("POST", "/v1/environments")] = reply(201, dict(ENVIRONMENT, place=place, refused=refused))
+        placed = self.client.create_environment("agent-desktop", place=("heavy", "lightning"))
         self.assertEqual(self.api.requests[-1]["body"], {"template": "agent-desktop", "seed": 1, "place": ["heavy", "lightning"]})
         self.assertEqual((placed.info["place"]["id"], placed.info["refused"][0]["code"]), ("core", "plan_required"))
-        self.api.routes[("POST", "/v1/simulations/import")] = reply(201, dict(SIMULATION, id="w_imp", place=place))
-        self.client.import_simulation({"v": 1, "snapshot": b"\x07\x00"}, "copy", place="lightning")
+        self.api.routes[("POST", "/v1/environments/import")] = reply(201, dict(ENVIRONMENT, id="w_imp", place=place))
+        self.client.import_environment({"v": 1, "snapshot": b"\x07\x00"}, "copy", place="lightning")
         self.assertEqual(
             self.api.requests[-1]["body"],
             {"bundle": {"v": 1}, "snapshot": b"\x07\x00", "options": {"name": "copy", "place": "lightning"}},
@@ -566,31 +566,31 @@ class SocietyAndForkTests(Base):
 
         form, kind = _bundle_form({"v": 1, "state_hash": "h", "snapshot": b"\x07\x00"})
         self.api.routes[("GET", p + "/export")] = reply(200, form, {"Content-Type": kind})
-        self.assertEqual(simulation.export_snapshot(), {"v": 1, "state_hash": "h", "snapshot": b"\x07\x00"})
-        self.api.routes[("POST", p + "/fork")] = reply(201, dict(SIMULATION, id="w_fork", forked_from="w_abc", place=place))
-        simulation.fork(snapshot={"id": "s_1"}, place="lightning")
+        self.assertEqual(environment.export_snapshot(), {"v": 1, "state_hash": "h", "snapshot": b"\x07\x00"})
+        self.api.routes[("POST", p + "/fork")] = reply(201, dict(ENVIRONMENT, id="w_fork", forked_from="w_abc", place=place))
+        environment.fork(snapshot={"id": "s_1"}, place="lightning")
         self.assertEqual(self.api.requests[-1]["body"], {"snapshot": "s_1", "place": "lightning"})
 
         s1 = {"id": "s_1", "label": "one", "state_hash": "h", "tick": 0, "parent": None, "author": "ada", "frames": ["workstation"]}
         self.api.routes[("GET", p + "/snapshots")] = reply(200, {"snapshots": [s1], "head": "s_1"})
-        self.assertEqual(simulation.snapshots(), [s1])
+        self.assertEqual(environment.snapshots(), [s1])
         self.api.routes[("DELETE", p + "/snapshots/s_1")] = reply(200, {"snapshots": [], "head": None})
-        self.assertEqual(simulation.drop_snapshot(s1), {"snapshots": [], "head": None})
+        self.assertEqual(environment.drop_snapshot(s1), {"snapshots": [], "head": None})
         png = b"\x89PNG\r\n\x1a\nrest"
         self.api.routes[("GET", p + "/snapshots/s_1/frames/workstation")] = reply(200, png, {"Content-Type": "image/png"})
-        frame = simulation.snapshot_frame("s_1", "workstation")
+        frame = environment.snapshot_frame("s_1", "workstation")
         self.assertEqual((bytes(frame), frame.format), (png, "png"))
-        history = {"simulation": "w_abc", "simulations": [{"id": "w_abc", "parent": None, "origin": None, "head": "s_1", "place": place, "snapshots": [s1]}]}
+        history = {"environment": "w_abc", "environments": [{"id": "w_abc", "parent": None, "origin": None, "head": "s_1", "place": place, "snapshots": [s1]}]}
         self.api.routes[("GET", p + "/history")] = reply(200, history)
-        self.assertEqual(simulation.history()["simulations"][0]["head"], "s_1")
+        self.assertEqual(environment.history()["environments"][0]["head"], "s_1")
 
         m = p + "/agents/agent_1/machines/workstation"
         listed = {k: v for k, v in GRANT.items() if k != "token"}
         self.api.routes[("PUT", m)] = reply(200, listed)
         self.api.routes[("DELETE", m)] = reply(200, listed)
-        self.assertEqual(simulation.connect_agent("agent_1", "workstation")["id"], "agent_1")
+        self.assertEqual(environment.connect_agent("agent_1", "workstation")["id"], "agent_1")
         self.assertEqual(self.api.requests[-1]["method"], "PUT")
-        self.assertEqual(simulation.disconnect_agent("agent_1", "workstation")["id"], "agent_1")
+        self.assertEqual(environment.disconnect_agent("agent_1", "workstation")["id"], "agent_1")
         self.assertEqual(self.api.requests[-1]["method"], "DELETE")
 
 

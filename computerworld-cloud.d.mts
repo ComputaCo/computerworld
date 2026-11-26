@@ -3,12 +3,12 @@
 
 export type Json = Record<string, any>;
 /**
- * Where to run a simulation: `lightning` (starts at once; the Lightning place that carries most
+ * Where to run an environment: `lightning` (starts at once; the Lightning place that carries most
  * of what the world launches), `heavy` (room for big worlds and every application), a Lightning
  * place's id, or a list of those tried in order.
  */
 export type PlaceChoice = 'lightning' | 'heavy' | 'core' | 'office' | 'media' | PlaceChoice[];
-/** Where a simulation runs. `reason` says why, on the simulation's own answers. */
+/** Where an environment runs. `reason` says why, on the environment's own answers. */
 export interface Place {
   /** A Lightning place's own id (`core`, `office`, `media`), or `heavy`. */
   id: string;
@@ -19,7 +19,7 @@ export interface Place {
   modules: string[];
   reason?: string;
 }
-/** A place that refused a simulation before the one it runs in. */
+/** A place that refused an environment before the one it runs in. */
 export interface Refusal {
   place: string;
   code: string;
@@ -79,17 +79,17 @@ export interface Clock {
   tick: number;
 }
 
-export interface SimulationInfo extends Clock {
+export interface EnvironmentInfo extends Clock {
   id: string;
   name?: string;
   source?: string;
   seed?: number;
   created_at?: number;
   machines?: string[];
-  /** Agents with their actor tokens, when the simulation was just made (a fork carries its parent's under new tokens). */
+  /** Agents with their actor tokens, when the environment was just made (a fork carries its parent's under new tokens). */
   agents?: number | AgentGrant[];
   snapshots?: number;
-  /** The ids of the simulations forked from this one. */
+  /** The ids of the environments forked from this one. */
   forks?: string[];
   forked_from?: string | Json | null;
   /** Where it runs; null for a recording, which nothing executes. */
@@ -151,7 +151,7 @@ export interface AgentGrant {
   token?: string;
 }
 
-/** One of a society's people: acts in the simulation, run by it, with no token. */
+/** One of a society's people: acts in the environment, run by it, with no token. */
 export interface SimulatedAgent {
   id: string;
   kind: 'simulated';
@@ -177,7 +177,7 @@ export interface TemplateInfo {
   [k: string]: any;
 }
 
-/** How a simulation's society is booted: a template's society by `id`, or a whole `spec`. */
+/** How an environment's society is booted: a template's society by `id`, or a whole `spec`. */
 export interface SocietyChoice {
   id?: string;
   spec?: Json;
@@ -257,7 +257,7 @@ export interface Frame {
   format: 'png' | 'rgba';
 }
 
-/** What `exportSnapshot` returns and `importSimulation` boots: the definition, seed and agents, and the engine's snapshot as bytes. */
+/** What `exportSnapshot` returns and `importEnvironment` boots: the definition, seed and agents, and the engine's snapshot as bytes. */
 export interface ExportBundle extends Json {
   format: string;
   definition: Json;
@@ -273,7 +273,7 @@ export interface Snapshot {
   tick: number;
   bytes?: number;
   created_at?: number;
-  /** The simulation's head when it was taken; null at the simulation's start. */
+  /** The environment's head when it was taken; null at the environment's start. */
   parent?: string | null;
   /** The username that took it. */
   author?: string | null;
@@ -283,7 +283,7 @@ export interface Snapshot {
 
 export interface SnapshotList {
   snapshots: Snapshot[];
-  /** The snapshot the simulation's state came from last. */
+  /** The snapshot the environment's state came from last. */
   head: string | null;
 }
 
@@ -296,13 +296,13 @@ export interface Restored extends Clock {
   agents: ((AgentGrant | HostedAgentInfo) & { token?: string })[];
 }
 
-/** One simulation of a family, as its history holds it. */
-export interface HistorySimulation {
+/** One environment of a family, as its history holds it. */
+export interface HistoryEnvironment {
   id: string;
   name?: string;
   source?: string;
   created_at?: number;
-  /** The simulation it was forked from. */
+  /** The environment it was forked from. */
   parent: string | null;
   /** Where it left its parent. */
   origin: { snapshot: string | null; tick: number | null; state_hash: string } | null;
@@ -313,9 +313,9 @@ export interface HistorySimulation {
 }
 
 export interface History {
-  simulation: string;
+  environment: string;
   /** The family, the furthest ancestor first. */
-  simulations?: HistorySimulation[];
+  environments?: HistoryEnvironment[];
   /** A recording's history: its steps. */
   steps?: Json[];
 }
@@ -354,7 +354,7 @@ export interface RunResult {
   instance: Json;
   demonstration: Demonstration;
   verification: Verification;
-  simulation: string | null;
+  environment: string | null;
   state_hash: string;
   timings_ms?: Json;
 }
@@ -368,7 +368,7 @@ export declare function findElement(scene: Scene, query?: ElementQuery & { index
 export declare function center(element: Element): [number, number];
 
 /** What an API key may reach (docs/cloud-api.md § Authentication). */
-export type Scope = 'simulations' | 'templates' | 'models' | 'account';
+export type Scope = 'environments' | 'templates' | 'models' | 'account';
 export interface ApiKey {
   id: string;
   name: string;
@@ -410,13 +410,13 @@ export declare class Client {
   vocabulary(): Promise<Json>;
   validate(definition: Json, options?: { society?: SocietyChoice }): Promise<{ ok: boolean; errors?: string[]; machines?: number; services?: number; people?: number; [k: string]: any }>;
 
-  listSimulations(): Promise<SimulationInfo[]>;
-  createSimulation(
+  listEnvironments(): Promise<EnvironmentInfo[]>;
+  createEnvironment(
     template: string | null,
     options?: { definition?: Json; seed?: number; name?: string; platform?: string; society?: string | SocietyChoice; idleTtl?: number; place?: PlaceChoice },
-  ): Promise<Simulation>;
-  getSimulation(id: string): Promise<Simulation>;
-  importSimulation(bundle: ExportBundle, name?: string, options?: { place?: PlaceChoice; idleTtl?: number }): Promise<Simulation>;
+  ): Promise<Environment>;
+  getEnvironment(id: string): Promise<Environment>;
+  importEnvironment(bundle: ExportBundle, name?: string, options?: { place?: PlaceChoice; idleTtl?: number }): Promise<Environment>;
 
   models(): Promise<Json[]>;
   chat(body: Json): Promise<Json>;
@@ -532,12 +532,12 @@ export interface SshGrant extends IngressGrant {
   ssh_command?: string;
 }
 
-export declare class Simulation {
+export declare class Environment {
   readonly id: string;
-  info: SimulationInfo;
+  info: EnvironmentInfo;
   readonly society: Society;
-  refresh(): Promise<SimulationInfo>;
-  rename(name: string): Promise<SimulationInfo>;
+  refresh(): Promise<EnvironmentInfo>;
+  rename(name: string): Promise<EnvironmentInfo>;
   delete(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
   readFile(path: string, options?: { machine?: string }): Promise<{ machine: string; path: string; content: string; base64: string; bytes: number }>;
@@ -573,7 +573,7 @@ export declare class Simulation {
   history(): Promise<History>;
   exportSnapshot(): Promise<ExportBundle>;
 
-  fork(options?: { name?: string; snapshot?: string | Snapshot; societyOps?: Json[]; place?: PlaceChoice; idleTtl?: number }): Promise<Simulation>;
+  fork(options?: { name?: string; snapshot?: string | Snapshot; societyOps?: Json[]; place?: PlaceChoice; idleTtl?: number }): Promise<Environment>;
   forks(): Promise<string[]>;
 
   /** Publish one declared service to real HTTP clients (docs § Publications). */
@@ -611,13 +611,13 @@ export interface ActOptions {
 
 export declare class Agent {
   readonly id: string;
-  readonly simulationId: string;
+  readonly environmentId: string;
   readonly token: string | null;
   grant: AgentGrant | HostedAgentInfo | { id: string; kind: 'simulated' };
   readonly config: AgentConfig;
   width: number;
   height: number;
-  static connect(token: string, simulationId: string, agentId: string, options?: ClientOptions): Agent;
+  static connect(token: string, environmentId: string, agentId: string, options?: ClientOptions): Agent;
 
   step(actions: Action | Action[], options?: { render?: { width?: number; height?: number; ifChanged?: boolean } }): Promise<StepResult>;
   observe(): Promise<{ channels: Json; tick: number }>;

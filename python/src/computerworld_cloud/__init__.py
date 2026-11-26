@@ -3,13 +3,13 @@
     from computerworld_cloud import Client
 
     client = Client()                      # COMPUTERWORLD_API_KEY, COMPUTERWORLD_API_BASE
-    with client.create_simulation("agent-desktop", seed=1) as simulation:
-        agent = simulation.agent()
+    with client.create_environment("agent-desktop", seed=1) as environment:
+        agent = environment.agent()
         agent.click(interaction="shell:launch:editor")
         agent.render().save("screen.png")
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .client import (  # noqa: E402
     DEFAULT_BASE_URL,
@@ -18,7 +18,7 @@ from .client import (  # noqa: E402
     Browser,
     BrowserSession,
     Client,
-    Simulation,
+    Environment,
     Frame,
     Screenshot,
     Society,
@@ -50,7 +50,7 @@ __all__ = [
     "ConflictError",
     "ConnectionFailed",
     "ElementNotFound",
-    "Simulation",
+    "Environment",
     "Frame",
     "NotFoundError",
     "PermissionDeniedError",
